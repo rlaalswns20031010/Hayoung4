@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Hayoung4",
+  "version": "1.0.0",
+  "description": "잡코리아와 게임잡의 채용 공고 확인과 인력 정보 정리를 돕습니다.",
+  "permissions": [
+    "storage",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://jobkorea.co.kr/*",
+    "https://*.jobkorea.co.kr/*",
+    "https://gamejob.co.kr/*",
+    "https://*.gamejob.co.kr/*",
+    "https://www.data.go.kr/*",
+    "https://raw.githubusercontent.com/rlaalswns20031010/Hayoung4/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/empty-state/*.png",
+        "dist/assets/empty-state/*.png"
+      ],
+      "matches": [
+        "https://jobkorea.co.kr/*",
+        "https://*.jobkorea.co.kr/*",
+        "https://gamejob.co.kr/*",
+        "https://*.gamejob.co.kr/*"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Hayoung4 등록 상태",
+    "default_popup": "popup.html"
+  }
+}

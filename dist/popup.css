@@ -1,0 +1,196 @@
+:root {
+  color: #20283a;
+  font-family:
+    Pretendard,
+    "Noto Sans KR",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: #f7f9fc;
+  margin: 0;
+  min-width: 330px;
+}
+
+.popup {
+  padding: 16px;
+}
+
+.header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.mark {
+  align-items: center;
+  background: linear-gradient(135deg, #17213b, #4169e1);
+  border-radius: 10px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  color: #17213b;
+  font-size: 17px;
+}
+
+.header p,
+.hint {
+  color: #687188;
+  font-size: 12px;
+}
+
+.status-card {
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid #dbe2ee;
+  border-radius: 11px;
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+}
+
+.status-card p {
+  color: #687188;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.update-card {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dbe2ee;
+  border-radius: 11px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding: 11px 12px;
+}
+
+.update-card p {
+  color: #687188;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.update-card[data-status="available"] {
+  background: #fff1dc;
+  border-color: #efbd70;
+}
+
+.update-card a {
+  background: #4169e1;
+  border-radius: 7px;
+  color: #fff;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 7px 8px;
+  text-decoration: none;
+}
+
+.status-dot {
+  border-radius: 50%;
+  flex: 0 0 10px;
+  height: 10px;
+  margin-top: 5px;
+  width: 10px;
+}
+
+.status-dot.pending {
+  background: #d8a525;
+}
+
+.status-dot.success {
+  background: #1e9a66;
+}
+
+.status-dot.error {
+  background: #c13945;
+}
+
+.details {
+  background: #fff;
+  border: 1px solid #e4e8f0;
+  border-radius: 10px;
+  margin: 10px 0;
+  padding: 5px 11px;
+}
+
+.details div {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 7px 0;
+}
+
+.details div + div {
+  border-top: 1px solid #edf0f6;
+}
+
+dt,
+dd {
+  font-size: 12px;
+  margin: 0;
+}
+
+dt {
+  color: #687188;
+}
+
+dd {
+  color: #20283a;
+  text-align: right;
+}
+
+button {
+  appearance: none;
+  background: #4169e1;
+  border: 0;
+  border-radius: 9px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+button.secondary {
+  background: #fff;
+  border: 1px solid #cbd5e7;
+  color: #30436f;
+  margin-top: 8px;
+}
+
+.hint {
+  line-height: 1.5;
+  margin-top: 9px;
+  text-align: center;
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hayoung4 등록 상태</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="header">
+        <span class="mark">H3</span>
+        <div>
+          <h1>Hayoung4</h1>
+          <p>콘텐츠 스크립트 상태</p>
+        </div>
+      </header>
+
+      <section class="status-card" aria-live="polite">
+        <span id="status-dot" class="status-dot pending"></span>
+        <div>
+          <strong id="status-title">등록 상태 확인 중</strong>
+          <p id="status-detail">잠시만 기다려 주세요.</p>
+        </div>
+      </section>
+
+      <section id="update-card" class="update-card" aria-live="polite">
+        <div>
+          <strong id="update-title">업데이트 확인 중</strong>
+          <p id="update-detail">Git 저장소의 버전 파일을 확인합니다.</p>
+        </div>
+        <a id="update-link" href="#" target="_blank" rel="noreferrer" hidden
+          >릴리즈 열기</a
+        >
+      </section>
+
+      <dl class="details">
+        <div>
+          <dt>지원 사이트</dt>
+          <dd>잡코리아 · 게임잡</dd>
+        </div>
+        <div>
+          <dt>마지막 실행</dt>
+          <dd id="last-ready">아직 확인되지 않음</dd>
+        </div>
+      </dl>
+
+      <button id="register" type="button">콘텐츠 스크립트 다시 등록</button>
+      <button id="manage" class="secondary" type="button">
+        Chrome 확장 관리 열기
+      </button>
+      <p class="hint">
+        오류가 계속되면 확장 관리에서 Hayoung4를 다시 로드한 뒤 지원 사이트 탭을
+        새로고침하세요.<br />수동 주소: <code>chrome://extensions/</code>
+      </p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
