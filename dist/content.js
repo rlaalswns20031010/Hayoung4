@@ -5828,6 +5828,36 @@
         "\uACF5\uAC1C \uD30C\uC77C \uC5F0\uB3C4\uB97C \uC120\uD0DD\uD55C \uB4A4 \uBAA9\uB85D\uB9CC \uD55C \uBC88 \uC870\uD68C\uD569\uB2C8\uB2E4. \uC120\uD0DD\uD55C \uC6D4\uC740 \uBCC4\uB3C4 \uB2E4\uC6B4\uB85C\uB4DC \uC5C6\uC774 \uC5F0\uAE08 \uD480\uC5D0 \uBC14\uB85C \uAC00\uACF5\xB7\uBCD1\uD569\uD569\uB2C8\uB2E4."
       )
     );
+    const gamejobControls = make("div", "hy-pension-portal-controls");
+    const addGamejob = makeButton(
+      "\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uCD94\uAC00",
+      "hy-secondary",
+      () => actions2.onAddGamejobPensionPool()
+    );
+    addGamejob.disabled = busy;
+    addGamejob.title = "\uB0B4\uC7A5\uB41C \uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uBB36\uC74C\uC744 \uD604\uC7AC \uD480\uC5D0 \uBCD1\uD569\uD569\uB2C8\uB2E4.";
+    const deleteOthers = makeButton(
+      "\uAC8C\uC784\uC7A1 \uC678 \uC5F0\uAE08 \uC0AD\uC81C",
+      "hy-attention",
+      () => {
+        if (confirm(
+          "\uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uC790\uB8CC\uB9CC \uB0A8\uAE30\uACE0 \uCD94\uAC00\uD55C \uACF5\uACF5\uB370\uC774\uD130\xB7CSV\uB97C \uBAA8\uB450 \uC0AD\uC81C\uD560\uAE4C\uC694?\n\n\uCD94\uAC00\uD55C \uC6D4\uBCC4 \uAE30\uB85D\uB3C4 \uC0AD\uC81C\uB418\uBA70 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+        )) {
+          actions2.onDeleteNonGamejobPensionData();
+        }
+      },
+      "\uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uC0AC\uC5C5\uC7A5 \uC57D 770\uAC1C\uB9CC \uB0A8\uAE30\uAE30"
+    );
+    deleteOthers.disabled = busy;
+    gamejobControls.append(addGamejob, deleteOthers);
+    wrapper.append(
+      make(
+        "p",
+        "hy-option-description",
+        "\uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uC0AC\uC5C5\uC7A5 \uBB36\uC74C\uC744 \uB2E4\uC2DC \uCD94\uAC00\uD558\uAC70\uB098, \uC774 \uBB36\uC74C\uB9CC \uB0A8\uAE30\uACE0 \uB098\uBA38\uC9C0 \uC5F0\uAE08 \uB370\uC774\uD130\uB97C \uC0AD\uC81C\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
+      ),
+      gamejobControls
+    );
     const controls = make("div", "hy-pension-portal-controls");
     const year = make("select", "hy-input hy-pension-year-select");
     const currentYear = (/* @__PURE__ */ new Date()).getFullYear();
@@ -7224,7 +7254,7 @@
     root.id = ROOT_ID;
     panel = make("aside", "hy-panel");
     panel.setAttribute("aria-label", "Hayoung4 \uD68C\uC0AC \uC815\uBCF4 \uD328\uB110");
-    collapsedTrigger = make("button", "hy-collapsed-trigger", "H3");
+    collapsedTrigger = make("button", "hy-collapsed-trigger", "H4");
     collapsedTrigger.type = "button";
     collapsedTrigger.title = "Hayoung4 \uD3BC\uCE58\uAE30 \xB7 \uB4DC\uB798\uADF8\uD558\uC5EC \uC774\uB3D9";
     const header = make("header", "hy-header");
@@ -7232,7 +7262,7 @@
     headerDragZone.setAttribute("aria-hidden", "true");
     const brand = make("div", "hy-brand");
     brand.append(
-      make("span", "hy-brand-mark", "H3"),
+      make("span", "hy-brand-mark", "H4"),
       createHelpMark(
         "\uC7A1\uCF54\uB9AC\uC544\xB7\uAC8C\uC784\uC7A1 \uACF5\uACE0\uC640 \uD68C\uC0AC\xB7\uAD6D\uBBFC\uC5F0\uAE08 \uC815\uBCF4\uB97C \uD55C \uD654\uBA74\uC5D0\uC11C \uD655\uC778\uD569\uB2C8\uB2E4.",
         "hy-header-help"
@@ -7627,6 +7657,25 @@
       state.pensionActivity = { busy: false, label: null };
       render();
     }
+  }
+  async function applyBundledGamejobPensionPool({ replaceExisting = false } = {}) {
+    const response = await sendRuntimeMessage({
+      type: "hayoung:pension-seed",
+      mergeExisting: !replaceExisting,
+      replaceExisting
+    });
+    if (!response?.ok) {
+      throw new Error(
+        response?.error ?? "\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uAE30\uBCF8 \uC790\uB8CC\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."
+      );
+    }
+    state.pensionPoolSummary = response.summary ?? state.pensionPoolSummary;
+    state.data = await recordBundledPensionSeedApplied(
+      BUNDLED_PENSION_SEED_VERSION
+    );
+    await invalidatePensionSearchCache();
+    await refreshPensionSearchResults();
+    return response;
   }
   function createViewModel() {
     const currentEmployeeCount = state.employeeCount ?? getLatestEmployeeCount(state.companyData);
@@ -8396,6 +8445,26 @@
           await invalidatePensionSearchCache();
           await refreshPensionSearchResults();
           state.notice = `${month} \uC5F0\uAE08 \uAE30\uB85D\uC744 \uBAA8\uB4E0 \uD68C\uC0AC\uC5D0\uC11C \uC0AD\uC81C\uD588\uC2B5\uB2C8\uB2E4.`;
+        });
+      });
+    },
+    onAddGamejobPensionPool() {
+      if (state.pensionActivity.busy) return;
+      runAction(async () => {
+        await withPensionActivity("\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uCD94\uAC00 \uC911", async () => {
+          const result = await applyBundledGamejobPensionPool();
+          state.notice = `\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uAE30\uBCF8 \uC790\uB8CC\uB97C \uBCD1\uD569\uD588\uC2B5\uB2C8\uB2E4. \uD604\uC7AC \uC5F0\uAE08 \uD480\uC740 ${formatNumber(result.summary?.companyCount)}\uAC1C \uD68C\uC0AC\uC785\uB2C8\uB2E4.`;
+        });
+      });
+    },
+    onDeleteNonGamejobPensionData() {
+      if (state.pensionActivity.busy) return;
+      runAction(async () => {
+        await withPensionActivity("\uAC8C\uC784\uC7A1 \uC678 \uC5F0\uAE08 \uB370\uC774\uD130 \uC0AD\uC81C \uC911", async () => {
+          const result = await applyBundledGamejobPensionPool({
+            replaceExisting: true
+          });
+          state.notice = `\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uAE30\uBCF8 \uC790\uB8CC ${formatNumber(result.summary?.companyCount)}\uAC1C \uD68C\uC0AC\uB9CC \uB0A8\uACBC\uC2B5\uB2C8\uB2E4.`;
         });
       });
     },

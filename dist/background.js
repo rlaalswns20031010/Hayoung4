@@ -1264,9 +1264,9 @@ ${await historyResponse.text()}`,
       excludedLocationCount: result.excludedLocationCount
     };
   }
-  async function importBundledPensionPool(assetUrl, fetchImpl = globalThis.fetch, { mergeExisting = false } = {}) {
+  async function importBundledPensionPool(assetUrl, fetchImpl = globalThis.fetch, { mergeExisting = false, replaceExisting = false } = {}) {
     const currentSummary = await loadPensionPoolSummary();
-    if (currentSummary.companyCount > 0 && !mergeExisting) {
+    if (currentSummary.companyCount > 0 && !mergeExisting && !replaceExisting) {
       return { imported: false, summary: currentSummary };
     }
     const response = await fetchImpl(assetUrl, { cache: "no-store" });
@@ -1276,14 +1276,13 @@ ${await historyResponse.text()}`,
       );
     }
     const pool = typeof response.json === "function" ? await response.json() : JSON.parse(await response.text());
-    const result = await importPensionPoolJson(
-      pool,
-      currentSummary.companyCount > 0 ? "merge" : "replace"
-    );
+    const mode = replaceExisting || currentSummary.companyCount === 0 ? "replace" : "merge";
+    const result = await importPensionPoolJson(pool, mode);
     invalidatePensionSearchIndex();
     return {
       imported: true,
-      merged: currentSummary.companyCount > 0,
+      merged: mode === "merge",
+      replaced: mode === "replace" && currentSummary.companyCount > 0,
       summary: result.summary
     };
   }
@@ -1520,7 +1519,10 @@ ${await historyResponse.text()}`,
           importBundledPensionPool(
             chrome.runtime.getURL(assetPath),
             globalThis.fetch,
-            { mergeExisting: Boolean(message.mergeExisting) }
+            {
+              mergeExisting: Boolean(message.mergeExisting),
+              replaceExisting: Boolean(message.replaceExisting)
+            }
           ),
           sendResponse
         );
