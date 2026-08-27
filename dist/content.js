@@ -55,15 +55,6 @@
       return true;
     });
   }
-  function downloadText(filename, text, type = "application/json") {
-    const blob = new Blob([text], { type });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
   function logError(...args) {
     console.error("[Hayoung4]", ...args);
   }
@@ -3514,9 +3505,6 @@
     await remove(ROOT_KEY);
     return createEmptyData();
   }
-  async function exportData() {
-    return loadData();
-  }
   function getOpenPostingCount(companyData) {
     return Object.values(companyData?.postings ?? {}).filter(
       (posting) => posting.status === "open"
@@ -4555,11 +4543,6 @@
   function renderDataManagement(viewModel, actions2) {
     const wrapper = make("div", "hy-option-data-management");
     wrapper.append(make("h3", "hy-option-subtitle", "\uB370\uC774\uD130 \uAD00\uB9AC"));
-    const controls = make("div", "hy-data-controls");
-    controls.append(
-      makeButton("\uC804\uCCB4 \uB0B4\uBCF4\uB0B4\uAE30", "hy-secondary", () => actions2.onExport())
-    );
-    wrapper.append(controls);
     wrapper.append(
       makeButton("Hayoung4 \uC804\uCCB4 \uCD08\uAE30\uD654", "hy-attention", () => {
         if (confirm("\uBAA8\uB4E0 \uD68C\uC0AC \uAE30\uB85D, \uC778\uB825 \uB370\uC774\uD130, \uC124\uC815\uC744 \uC0AD\uC81C\uD560\uAE4C\uC694?")) {
@@ -6230,8 +6213,8 @@
       actions2
     );
     content.append(
-      renderGamejobOfficialWorkforce(viewModel, actions2),
       renderPensionOfficialWorkforce(viewModel),
+      renderGamejobOfficialWorkforce(viewModel, actions2),
       renderGamejobPostingDetailRecords(viewModel, actions2)
     );
     return details;
@@ -8718,15 +8701,6 @@
         state.data = await saveListedPosting(state.company, posting);
         updateDerivedState();
         state.notice = `${posting.title} \uACF5\uACE0\uB97C \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`;
-        render();
-      });
-    },
-    onExport() {
-      runAction(async () => {
-        const data = await exportData();
-        const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-        downloadText(`hayoung4-${date}.json`, JSON.stringify(data, null, 2));
-        state.notice = "Hayoung4 \uB370\uC774\uD130\uB97C \uB0B4\uBCF4\uB0C8\uC2B5\uB2C8\uB2E4.";
         render();
       });
     },
