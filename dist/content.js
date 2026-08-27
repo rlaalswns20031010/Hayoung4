@@ -2672,7 +2672,7 @@
   }
 
   // src/storage-schema.js
-  var SCHEMA_VERSION = 19;
+  var SCHEMA_VERSION = 20;
   var V3_SECTION_ORDER = Object.freeze([
     "companyInfo",
     "workforce",
@@ -2712,6 +2712,8 @@
     autoCompanyInfo: false,
     autoPastPostings: false,
     scrollLoadPostings: false,
+    pensionImportGamejobOnly: false,
+    pensionImportExistingCompaniesOnly: false,
     favoritePostingSearches: [],
     gamejobHiddenPostings: [],
     gamejobHiddenCompanies: [],
@@ -3141,6 +3143,21 @@
       schemaVersion: 19
     };
   }
+  function migrateV19ToV20(value) {
+    return {
+      ...value,
+      settings: {
+        ...value.settings ?? {},
+        pensionImportGamejobOnly: Boolean(
+          value.settings?.pensionImportGamejobOnly
+        ),
+        pensionImportExistingCompaniesOnly: Boolean(
+          value.settings?.pensionImportExistingCompaniesOnly
+        )
+      },
+      schemaVersion: 20
+    };
+  }
   var MIGRATIONS = /* @__PURE__ */ new Map([
     [0, migrateV0ToV1],
     [1, migrateV1ToV2],
@@ -3160,7 +3177,8 @@
     [15, migrateV15ToV16],
     [16, migrateV16ToV17],
     [17, migrateV17ToV18],
-    [18, migrateV18ToV19]
+    [18, migrateV18ToV19],
+    [19, migrateV19ToV20]
   ]);
   function migrateData(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -4056,6 +4074,19 @@
     }
     return sortPool(pool);
   }
+  function keepOnlyProtectedPensionCompanies(poolValue) {
+    const pool = normalizePensionPool(poolValue);
+    const protectedNames = new Set(pool.protectedCompanies);
+    const companies = Object.fromEntries(
+      Object.entries(pool.companies).filter(([name]) => protectedNames.has(name))
+    );
+    const companyBindings = Object.fromEntries(
+      Object.entries(pool.companyBindings).filter(
+        ([, binding]) => protectedNames.has(cleanText(binding?.name))
+      )
+    );
+    return sortPool({ ...pool, companies, companyBindings });
+  }
   function filterPensionPoolByCurrentSubscribers(poolValue, minimumCurrentSubscribers = OFFICIAL_PENSION_MIN_CURRENT_SUBSCRIBERS) {
     const pool = normalizePensionPool(poolValue);
     const minimum = Math.max(0, Number(minimumCurrentSubscribers) || 0);
@@ -4139,20 +4170,34 @@
   function importPensionCsvFiles(files, options = {}) {
     return queuePensionMutation(async () => {
       const pool = await loadPensionPool();
+      const protectedNames = new Set(pool.protectedCompanies);
+      const existingNames = new Set(Object.keys(pool.companies));
+      const gamejobOnly = Boolean(options.gamejobOnly);
+      const existingCompaniesOnly = Boolean(options.existingCompaniesOnly);
       const diagnostics = [];
       const batches = [];
+      let filteredOutRecordCount = 0;
       for (const file of files) {
         const text = typeof file.arrayBuffer === "function" ? decodeCsvBytes(await file.arrayBuffer()) : typeof file.text === "function" ? await file.text() : file.text;
         const parsed = parsePensionCsv(text);
+        const records = parsed.records.filter((record) => {
+          const included = (!gamejobOnly || protectedNames.has(record.name)) && (!existingCompaniesOnly || existingNames.has(record.name));
+          if (!included) filteredOutRecordCount += 1;
+          return included;
+        });
         batches.push({
-          records: parsed.records,
+          records,
           source: {
             name: file.name,
             sourceUrl: file.sourceUrl,
             portalMonth: file.pensionSourceMonth
           }
         });
-        diagnostics.push({ name: file.name, ...parsed.diagnostics });
+        diagnostics.push({
+          name: file.name,
+          ...parsed.diagnostics,
+          includedRecordCount: records.length
+        });
       }
       assertRequiredPensionMonth(
         summarizeNormalizedPensionPool(pool),
@@ -4167,13 +4212,21 @@
       return {
         ...await writeNormalizedPensionPool(filtered),
         diagnostics,
-        excludedLocationCount
+        excludedLocationCount,
+        filteredOutRecordCount
       };
     });
   }
   function deletePensionPoolMonth2(month) {
     return queuePensionMutation(
       async () => savePensionPool(deletePensionPoolMonth(await loadPensionPool(), month))
+    );
+  }
+  function keepOnlyGamejobPensionCompanies() {
+    return queuePensionMutation(
+      async () => savePensionPool(
+        keepOnlyProtectedPensionCompanies(await loadPensionPool())
+      )
     );
   }
 
@@ -5481,6 +5534,20 @@
   }
 
   // src/ui/pension-sections.js
+  function createPensionImportFilter(settings, key, title, description, actions2) {
+    const label = make("label", "hy-option-row");
+    label.dataset.tooltip = description;
+    const input = make("input", "hy-option-switch");
+    input.type = "checkbox";
+    input.checked = Boolean(settings?.[key]);
+    input.setAttribute("aria-label", `${title}: ${description}`);
+    input.addEventListener(
+      "change",
+      () => actions2.onSettingsChange({ [key]: input.checked })
+    );
+    label.append(make("strong", "", title), input);
+    return label;
+  }
   function formatPensionSignal(value) {
     return Number.isFinite(value) ? `${value}%` : "\uD655\uC778 \uBD88\uAC00";
   }
@@ -5829,6 +5896,23 @@
       )
     );
     const gamejobControls = make("div", "hy-pension-portal-controls");
+    const importFilters = make("div", "hy-pension-import-filters");
+    importFilters.append(
+      createPensionImportFilter(
+        viewModel.settings,
+        "pensionImportGamejobOnly",
+        "\uAC8C\uC784\uC7A1\uB9CC \uD3EC\uD568",
+        "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138\uACFC \uB85C\uCEEC CSV\uC5D0\uC11C \uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC758 \uC2A4\uB0C5\uC0F7\uB9CC \uCD94\uAC00\uD569\uB2C8\uB2E4.",
+        actions2
+      ),
+      createPensionImportFilter(
+        viewModel.settings,
+        "pensionImportExistingCompaniesOnly",
+        "\uD604\uC7AC \uC788\uB294 \uD68C\uC0AC\uB9CC \uD3EC\uD568",
+        "\uAC00\uC838\uC624\uAE30 \uC9C1\uC804 \uC5F0\uAE08 \uD480\uC5D0 \uC774\uBBF8 \uC788\uB294 \uD68C\uC0AC\uC758 \uC0C8 \uC6D4 \uC2A4\uB0C5\uC0F7\uB9CC \uCD94\uAC00\uD569\uB2C8\uB2E4.",
+        actions2
+      )
+    );
     const addGamejob = makeButton(
       "\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uCD94\uAC00",
       "hy-secondary",
@@ -5841,12 +5925,12 @@
       "hy-attention",
       () => {
         if (confirm(
-          "\uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uC790\uB8CC\uB9CC \uB0A8\uAE30\uACE0 \uCD94\uAC00\uD55C \uACF5\uACF5\uB370\uC774\uD130\xB7CSV\uB97C \uBAA8\uB450 \uC0AD\uC81C\uD560\uAE4C\uC694?\n\n\uCD94\uAC00\uD55C \uC6D4\uBCC4 \uAE30\uB85D\uB3C4 \uC0AD\uC81C\uB418\uBA70 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+          "\uD604\uC7AC \uC5F0\uAE08 \uD480\uC5D0\uC11C \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uAC00 \uC544\uB2CC \uD68C\uC0AC\uC640 \uADF8 \uC2A4\uB0C5\uC0F7\uC744 \uBAA8\uB450 \uC0AD\uC81C\uD560\uAE4C\uC694?\n\n\uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC758 \uAE30\uC874 \uC6D4\uBCC4 \uC2A4\uB0C5\uC0F7\uC740 \uC720\uC9C0\uB418\uBA70, \uB2E4\uB978 \uD68C\uC0AC \uB370\uC774\uD130\uB294 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
         )) {
           actions2.onDeleteNonGamejobPensionData();
         }
       },
-      "\uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uC0AC\uC5C5\uC7A5 \uC57D 770\uAC1C\uB9CC \uB0A8\uAE30\uAE30"
+      "\uD604\uC7AC \uC5F0\uAE08 \uD480\uC5D0\uC11C \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC640 \uADF8 \uC6D4\uBCC4 \uC2A4\uB0C5\uC0F7\uB9CC \uB0A8\uAE30\uAE30"
     );
     deleteOthers.disabled = busy;
     gamejobControls.append(addGamejob, deleteOthers);
@@ -5854,8 +5938,9 @@
       make(
         "p",
         "hy-option-description",
-        "\uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uC0AC\uC5C5\uC7A5 \uBB36\uC74C\uC744 \uB2E4\uC2DC \uCD94\uAC00\uD558\uAC70\uB098, \uC774 \uBB36\uC74C\uB9CC \uB0A8\uAE30\uACE0 \uB098\uBA38\uC9C0 \uC5F0\uAE08 \uB370\uC774\uD130\uB97C \uC0AD\uC81C\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
+        "\uD3EC\uD138\xB7CSV \uCD94\uAC00 \uBC94\uC704\uB97C \uBBF8\uB9AC \uC81C\uD55C\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uB450 \uC635\uC158\uC744 \uD568\uAED8 \uCF1C\uBA74 \uB450 \uC870\uAC74\uC744 \uBAA8\uB450 \uB9CC\uC871\uD558\uB294 \uD68C\uC0AC\uB9CC \uD3EC\uD568\uD569\uB2C8\uB2E4."
       ),
+      importFilters,
       gamejobControls
     );
     const controls = make("div", "hy-pension-portal-controls");
@@ -7641,6 +7726,14 @@
     }
     return policy.requiredLatestMonth;
   }
+  function getPensionImportFilters() {
+    return {
+      gamejobOnly: Boolean(state.data?.settings?.pensionImportGamejobOnly),
+      existingCompaniesOnly: Boolean(
+        state.data?.settings?.pensionImportExistingCompaniesOnly
+      )
+    };
+  }
   async function withPensionActivity(label, operation) {
     state.pensionActivity = { busy: true, label };
     render();
@@ -7658,11 +7751,10 @@
       render();
     }
   }
-  async function applyBundledGamejobPensionPool({ replaceExisting = false } = {}) {
+  async function applyBundledGamejobPensionPool() {
     const response = await sendRuntimeMessage({
       type: "hayoung:pension-seed",
-      mergeExisting: !replaceExisting,
-      replaceExisting
+      mergeExisting: true
     });
     if (!response?.ok) {
       throw new Error(
@@ -8350,7 +8442,8 @@
         if (files.length === 0) return;
         await withPensionActivity("CSV \uAC00\uACF5\xB7\uBCD1\uD569 \uC911", async () => {
           const result = await importPensionCsvFiles(files, {
-            requiredLatestMonth
+            requiredLatestMonth,
+            ...getPensionImportFilters()
           });
           state.pensionPoolSummary = result.summary;
           await invalidatePensionSearchCache();
@@ -8359,7 +8452,7 @@
             (sum, item) => sum + item.acceptedRows,
             0
           );
-          state.notice = `\uAD6D\uBBFC\uC5F0\uAE08 CSV ${files.length}\uAC1C\uC5D0\uC11C ${acceptedRows.toLocaleString("ko-KR")}\uD589\uC744 \uCC98\uB9AC\uD588\uC2B5\uB2C8\uB2E4. \uAC00\uC785\uC790 \uC218 10\uBA85 \uC774\uD558 \uC0AC\uC5C5\uC7A5 ${formatNumber(result.excludedLocationCount)}\uAC1C\uB97C \uC81C\uC678\uD588\uC2B5\uB2C8\uB2E4.`;
+          state.notice = `\uAD6D\uBBFC\uC5F0\uAE08 CSV ${files.length}\uAC1C\uC5D0\uC11C ${acceptedRows.toLocaleString("ko-KR")}\uD589\uC744 \uCC98\uB9AC\uD588\uC2B5\uB2C8\uB2E4. \uD3EC\uD568 \uC870\uAC74\uC5D0\uC11C ${formatNumber(result.filteredOutRecordCount)}\uAC1C \uC2A4\uB0C5\uC0F7, \uAC00\uC785\uC790 \uC218 \uAE30\uC900\uC5D0\uC11C ${formatNumber(result.excludedLocationCount)}\uAC1C \uC0AC\uC5C5\uC7A5\uC744 \uC81C\uC678\uD588\uC2B5\uB2C8\uB2E4.`;
         });
       });
     },
@@ -8461,10 +8554,11 @@
       if (state.pensionActivity.busy) return;
       runAction(async () => {
         await withPensionActivity("\uAC8C\uC784\uC7A1 \uC678 \uC5F0\uAE08 \uB370\uC774\uD130 \uC0AD\uC81C \uC911", async () => {
-          const result = await applyBundledGamejobPensionPool({
-            replaceExisting: true
-          });
-          state.notice = `\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uAE30\uBCF8 \uC790\uB8CC ${formatNumber(result.summary?.companyCount)}\uAC1C \uD68C\uC0AC\uB9CC \uB0A8\uACBC\uC2B5\uB2C8\uB2E4.`;
+          const result = await keepOnlyGamejobPensionCompanies();
+          state.pensionPoolSummary = result.summary;
+          await invalidatePensionSearchCache();
+          await refreshPensionSearchResults();
+          state.notice = `\uD604\uC7AC \uC2A4\uB0C5\uC0F7\uC744 \uC720\uC9C0\uD55C \uCC44 \uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uD68C\uC0AC ${formatNumber(result.summary?.companyCount)}\uAC1C\uB9CC \uB0A8\uACBC\uC2B5\uB2C8\uB2E4.`;
         });
       });
     },
@@ -8527,7 +8621,12 @@
         await withPensionActivity("CSV \uBC1B\uAE30\xB7\uAC00\uACF5\xB7\uC5F0\uAE08 \uD480 \uBCD1\uD569 \uC911", async () => {
           const response = await sendRuntimeMessage({
             type: "hayoung:pension-portal-import",
-            file: { ...file, month: fileMonth, requiredLatestMonth }
+            file: {
+              ...file,
+              month: fileMonth,
+              requiredLatestMonth,
+              ...getPensionImportFilters()
+            }
           });
           if (!response?.ok) {
             if (response?.requiresPortal) {
@@ -8545,7 +8644,7 @@
           }
           state.pensionPoolSummary = response.summary;
           await refreshPensionSearchResults();
-          state.notice = `${file.name}\uC744 \uC5F0\uAE08 \uD480\uC5D0 \uBC14\uB85C \uBC18\uC601\uD588\uC2B5\uB2C8\uB2E4. \uAC00\uC785\uC790 \uC218 10\uBA85 \uC774\uD558 \uC0AC\uC5C5\uC7A5 ${formatNumber(response.excludedLocationCount)}\uAC1C\uB97C \uC81C\uC678\uD588\uC2B5\uB2C8\uB2E4.`;
+          state.notice = `${file.name}\uC744 \uC5F0\uAE08 \uD480\uC5D0 \uBC14\uB85C \uBC18\uC601\uD588\uC2B5\uB2C8\uB2E4. \uD3EC\uD568 \uC870\uAC74\uC5D0\uC11C ${formatNumber(response.filteredOutRecordCount)}\uAC1C \uC2A4\uB0C5\uC0F7, \uAC00\uC785\uC790 \uC218 \uAE30\uC900\uC5D0\uC11C ${formatNumber(response.excludedLocationCount)}\uAC1C \uC0AC\uC5C5\uC7A5\uC744 \uC81C\uC678\uD588\uC2B5\uB2C8\uB2E4.`;
         });
       });
     },

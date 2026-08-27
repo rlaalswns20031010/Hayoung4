@@ -467,6 +467,8 @@ ${await historyResponse.text()}`,
     autoCompanyInfo: false,
     autoPastPostings: false,
     scrollLoadPostings: false,
+    pensionImportGamejobOnly: false,
+    pensionImportExistingCompaniesOnly: false,
     favoritePostingSearches: [],
     gamejobHiddenPostings: [],
     gamejobHiddenCompanies: [],
@@ -1149,20 +1151,34 @@ ${await historyResponse.text()}`,
   function importPensionCsvFiles(files, options = {}) {
     return queuePensionMutation(async () => {
       const pool = await loadPensionPool();
+      const protectedNames = new Set(pool.protectedCompanies);
+      const existingNames = new Set(Object.keys(pool.companies));
+      const gamejobOnly = Boolean(options.gamejobOnly);
+      const existingCompaniesOnly = Boolean(options.existingCompaniesOnly);
       const diagnostics = [];
       const batches = [];
+      let filteredOutRecordCount = 0;
       for (const file of files) {
         const text = typeof file.arrayBuffer === "function" ? decodeCsvBytes(await file.arrayBuffer()) : typeof file.text === "function" ? await file.text() : file.text;
         const parsed = parsePensionCsv(text);
+        const records = parsed.records.filter((record) => {
+          const included = (!gamejobOnly || protectedNames.has(record.name)) && (!existingCompaniesOnly || existingNames.has(record.name));
+          if (!included) filteredOutRecordCount += 1;
+          return included;
+        });
         batches.push({
-          records: parsed.records,
+          records,
           source: {
             name: file.name,
             sourceUrl: file.sourceUrl,
             portalMonth: file.pensionSourceMonth
           }
         });
-        diagnostics.push({ name: file.name, ...parsed.diagnostics });
+        diagnostics.push({
+          name: file.name,
+          ...parsed.diagnostics,
+          includedRecordCount: records.length
+        });
       }
       assertRequiredPensionMonth(
         summarizeNormalizedPensionPool(pool),
@@ -1177,7 +1193,8 @@ ${await historyResponse.text()}`,
       return {
         ...await writeNormalizedPensionPool(filtered),
         diagnostics,
-        excludedLocationCount
+        excludedLocationCount,
+        filteredOutRecordCount
       };
     });
   }
@@ -1252,7 +1269,9 @@ ${await historyResponse.text()}`,
         }
       ],
       {
-        requiredLatestMonth: file?.requiredLatestMonth
+        requiredLatestMonth: file?.requiredLatestMonth,
+        gamejobOnly: Boolean(file?.gamejobOnly),
+        existingCompaniesOnly: Boolean(file?.existingCompaniesOnly)
       }
     );
     invalidatePensionSearchIndex();
@@ -1261,12 +1280,13 @@ ${await historyResponse.text()}`,
       name: resolved.name,
       summary: result.summary,
       diagnostics: result.diagnostics,
-      excludedLocationCount: result.excludedLocationCount
+      excludedLocationCount: result.excludedLocationCount,
+      filteredOutRecordCount: result.filteredOutRecordCount
     };
   }
-  async function importBundledPensionPool(assetUrl, fetchImpl = globalThis.fetch, { mergeExisting = false, replaceExisting = false } = {}) {
+  async function importBundledPensionPool(assetUrl, fetchImpl = globalThis.fetch, { mergeExisting = false } = {}) {
     const currentSummary = await loadPensionPoolSummary();
-    if (currentSummary.companyCount > 0 && !mergeExisting && !replaceExisting) {
+    if (currentSummary.companyCount > 0 && !mergeExisting) {
       return { imported: false, summary: currentSummary };
     }
     const response = await fetchImpl(assetUrl, { cache: "no-store" });
@@ -1276,13 +1296,12 @@ ${await historyResponse.text()}`,
       );
     }
     const pool = typeof response.json === "function" ? await response.json() : JSON.parse(await response.text());
-    const mode = replaceExisting || currentSummary.companyCount === 0 ? "replace" : "merge";
+    const mode = currentSummary.companyCount === 0 ? "replace" : "merge";
     const result = await importPensionPoolJson(pool, mode);
     invalidatePensionSearchIndex();
     return {
       imported: true,
       merged: mode === "merge",
-      replaced: mode === "replace" && currentSummary.companyCount > 0,
       summary: result.summary
     };
   }
@@ -1520,8 +1539,7 @@ ${await historyResponse.text()}`,
             chrome.runtime.getURL(assetPath),
             globalThis.fetch,
             {
-              mergeExisting: Boolean(message.mergeExisting),
-              replaceExisting: Boolean(message.replaceExisting)
+              mergeExisting: Boolean(message.mergeExisting)
             }
           ),
           sendResponse

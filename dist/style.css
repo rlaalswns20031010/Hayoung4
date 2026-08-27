@@ -1864,6 +1864,20 @@
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+#hy-root .hy-pension-import-filters {
+  background: #f7f9fd;
+  border: 1px solid var(--hy-border);
+  border-radius: 9px;
+  display: grid;
+  margin-bottom: 8px;
+  padding: 4px 8px;
+}
+
+#hy-root .hy-pension-import-filters .hy-option-row {
+  min-height: 34px;
+  padding: 6px 2px;
+}
+
 #hy-root .hy-pension-portal-files {
   border: 1px solid var(--hy-border);
   border-radius: 8px;
