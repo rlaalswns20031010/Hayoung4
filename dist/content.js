@@ -2554,7 +2554,7 @@
 
   // src/pension-policy.js
   var PENSION_LATEST_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1e3;
-  var BUNDLED_PENSION_SEED_VERSION = "2026-08-game-directory-v4";
+  var BUNDLED_PENSION_SEED_VERSION = "2026-08-game-directory-v5";
   function normalizePensionMonth(value) {
     const match = cleanText(value).match(/^(20\d{2})\D?(0?[1-9]|1[0-2])$/);
     return match ? `${match[1]}-${match[2].padStart(2, "0")}` : null;
@@ -5842,6 +5842,7 @@
 
   // src/ui/pension-history-chart.js
   var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  var MINIMUM_FALLBACK_ADDRESS_SCORE = 0.45;
   var PENSION_HISTORY_SERIES = Object.freeze([
     {
       key: "subscribers",
@@ -5869,54 +5870,116 @@
     }
     return element;
   }
-  function resolveChartLocation(result) {
-    const locations = result?.locations ?? [];
-    return locations.find(
-      (location2) => location2.address === (result?.matchedAddress ?? null)
-    ) ?? locations[0] ?? null;
+  function normalizeAddress2(value) {
+    return String(value ?? "").normalize("NFKC").toLocaleLowerCase("ko-KR").replace(/[^\p{L}\p{N}]+/gu, "");
   }
-  function createPensionHistoryChartModel(result, selectedMonths = null) {
-    const location2 = resolveChartLocation(result);
-    const availableMonths = Object.keys(location2?.months ?? {}).sort();
+  function addressTokens(value) {
+    return new Set(
+      String(value ?? "").normalize("NFKC").toLocaleLowerCase("ko-KR").split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2)
+    );
+  }
+  function getAddressSimilarity(left, right) {
+    const normalizedLeft = normalizeAddress2(left);
+    const normalizedRight = normalizeAddress2(right);
+    if (!normalizedLeft || !normalizedRight) return 0;
+    if (normalizedLeft === normalizedRight) return 1;
+    if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) {
+      return 0.9;
+    }
+    const leftTokens = addressTokens(left);
+    const rightTokens = addressTokens(right);
+    const intersection = [...leftTokens].filter(
+      (token) => rightTokens.has(token)
+    ).length;
+    const union = (/* @__PURE__ */ new Set([...leftTokens, ...rightTokens])).size;
+    return union === 0 ? 0 : intersection / union;
+  }
+  function resolveChartLocations(result) {
+    const locations = result?.locations ?? [];
+    if (locations.length === 0) return [];
+    const preferredAddress = result?.matchedAddress ?? locations[0]?.address;
+    const ranked = locations.map((location2, index) => ({
+      location: location2,
+      index,
+      similarity: getAddressSimilarity(location2.address, preferredAddress)
+    })).sort(
+      (left, right) => right.similarity - left.similarity || left.index - right.index
+    );
+    const preferred = ranked[0];
+    return ranked.filter(
+      (candidate) => candidate === preferred || candidate.similarity >= MINIMUM_FALLBACK_ADDRESS_SCORE
+    ).map(({ location: location2 }) => location2);
+  }
+  function resolveSeries(selectedSeries) {
+    if (selectedSeries == null) return [...PENSION_HISTORY_SERIES];
+    const selected = selectedSeries instanceof Set ? selectedSeries : new Set(selectedSeries ?? []);
+    return PENSION_HISTORY_SERIES.filter((series) => selected.has(series.key));
+  }
+  function createPensionHistoryChartModel(result, selectedMonths = null, selectedSeries = null) {
+    const locations = resolveChartLocations(result);
+    const availableMonths = [
+      ...new Set(
+        locations.flatMap((location2) => Object.keys(location2?.months ?? {}))
+      )
+    ].sort();
     const selected = selectedMonths instanceof Set ? selectedMonths : new Set(selectedMonths ?? availableMonths);
+    const series = resolveSeries(selectedSeries);
     const months = availableMonths.filter((month) => selected.has(month));
     const rows = months.map((month) => {
-      const snapshot = location2.months[month];
+      const sourceLocation = locations.find(
+        (location2) => location2?.months?.[month] != null
+      );
+      const snapshot = sourceLocation?.months?.[month] ?? null;
       return {
         month,
         snapshot,
+        sourceAddress: sourceLocation?.address ?? null,
         values: Object.fromEntries(
-          PENSION_HISTORY_SERIES.map((series) => [
-            series.key,
-            series.chartValue(snapshot?.[series.key])
+          series.map((item) => [
+            item.key,
+            item.chartValue(snapshot?.[item.key])
           ])
         )
       };
     });
-    const values = [
-      0,
-      ...rows.flatMap((row) => Object.values(row.values))
-    ].filter(Number.isFinite);
-    const rawMinimum = Math.min(...values);
-    const rawMaximum = Math.max(...values);
+    const finiteValues = rows.flatMap((row) => Object.values(row.values)).filter(Number.isFinite);
+    const includesChangeSeries = series.some(
+      ({ key }) => key === "joined" || key === "left"
+    );
+    const values = includesChangeSeries ? [0, ...finiteValues] : finiteValues;
+    const rawMinimum = values.length > 0 ? Math.min(...values) : 0;
+    const rawMaximum = values.length > 0 ? Math.max(...values) : 0;
     const span = Math.max(1, rawMaximum - rawMinimum);
     const padding = Math.max(1, Math.ceil(span * 0.1));
     return {
-      location: location2,
+      location: locations[0] ?? null,
+      locations,
+      series,
       availableMonths,
       rows,
       minimum: rawMinimum - padding,
       maximum: rawMaximum + padding
     };
   }
-  function renderLatestMetrics(model) {
+  function renderLatestMetrics(model, selectedSeries, onSeriesChange) {
     const metrics = make("div", "hy-pension-chart-metrics");
     const latest = model.rows.at(-1);
     for (const series of PENSION_HISTORY_SERIES) {
-      const card = make("div", "hy-pension-chart-metric");
+      const card = make("label", "hy-pension-chart-metric");
       card.style.setProperty("--hy-series-color", series.color);
+      const heading = make("span", "hy-pension-chart-metric-label");
+      const input = make("input");
+      input.type = "checkbox";
+      input.checked = selectedSeries.has(series.key);
+      input.setAttribute("aria-label", `${series.label} \uADF8\uB798\uD504 \uD45C\uC2DC`);
+      input.addEventListener("change", () => {
+        if (input.checked) selectedSeries.add(series.key);
+        else selectedSeries.delete(series.key);
+        onSeriesChange();
+      });
+      heading.append(input, make("span", "", series.label));
       card.append(
-        make("span", "", series.label),
+        heading,
         make(
           "strong",
           "",
@@ -5927,13 +5990,13 @@
     }
     return metrics;
   }
-  function renderSvgChart(model) {
+  function renderSvgChart(model, title) {
     if (model.rows.length === 0) {
       return make("p", "hy-empty", "\uD45C\uC2DC\uD560 \uAE30\uAC04\uC744 \uC120\uD0DD\uD558\uC138\uC694.");
     }
     const width = 640;
-    const height = 280;
-    const plot = { left: 58, right: 18, top: 18, bottom: 42 };
+    const height = 250;
+    const plot = { left: 82, right: 20, top: 20, bottom: 18 };
     const plotWidth = width - plot.left - plot.right;
     const plotHeight = height - plot.top - plot.bottom;
     const range = Math.max(1, model.maximum - model.minimum);
@@ -5943,7 +6006,7 @@
       class: "hy-pension-history-svg",
       viewBox: `0 0 ${width} ${height}`,
       role: "img",
-      "aria-label": `${model.rows[0].month}\uBD80\uD130 ${model.rows.at(-1).month}\uAE4C\uC9C0 \uAD6D\uBBFC\uC5F0\uAE08 \uAC00\uC785\uC790 \uD604\uD669`
+      "aria-label": `${model.rows[0].month}\uBD80\uD130 ${model.rows.at(-1).month}\uAE4C\uC9C0 ${title}`
     });
     for (let index = 0; index <= 4; index += 1) {
       const value = model.maximum - range * index / 4;
@@ -5959,8 +6022,8 @@
       );
       const label = svgElement("text", {
         class: "hy-pension-chart-axis-label",
-        x: plot.left - 8,
-        y: lineY + 4,
+        x: plot.left - 12,
+        y: lineY + 7,
         "text-anchor": "end"
       });
       label.textContent = String(Math.round(value));
@@ -5977,19 +6040,7 @@
         })
       );
     }
-    const labelStep = Math.max(1, Math.ceil(model.rows.length / 7));
-    model.rows.forEach((row, index) => {
-      if (index % labelStep !== 0 && index !== model.rows.length - 1) return;
-      const label = svgElement("text", {
-        class: "hy-pension-chart-month-label",
-        x: x(index),
-        y: height - 15,
-        "text-anchor": "middle"
-      });
-      label.textContent = row.month;
-      svg.append(label);
-    });
-    for (const series of PENSION_HISTORY_SERIES) {
+    for (const series of model.series) {
       const segments = [];
       let segment = [];
       model.rows.forEach((row, index) => {
@@ -6019,18 +6070,43 @@
           class: "hy-pension-chart-point",
           cx: x(index),
           cy: y(value),
-          r: 5,
+          r: 6,
           fill: series.color,
           tabindex: 0
         });
         const original = row.snapshot?.[series.key];
-        const title = svgElement("title");
-        title.textContent = `${row.month} \xB7 ${series.label} ${formatNumber(original)}\uBA85${series.key === "left" ? ` \xB7 \uADF8\uB798\uD504 ${formatNumber(value)}` : ""}`;
-        circle.append(title);
+        const titleElement = svgElement("title");
+        titleElement.textContent = `${row.month} \xB7 ${series.label} ${formatNumber(original)}\uBA85${series.key === "left" ? ` \xB7 \uADF8\uB798\uD504 ${formatNumber(value)}` : ""}`;
+        circle.append(titleElement);
         svg.append(circle);
       });
     }
     return svg;
+  }
+  function renderChartPanel(model, title, className) {
+    const panel2 = make("section", `hy-pension-chart-panel ${className}`);
+    panel2.append(
+      make("strong", "hy-pension-chart-panel-title", title),
+      renderSvgChart(model, title)
+    );
+    return panel2;
+  }
+  function createPeriodFilters(months, selectedMonths, onChange) {
+    const filters = make("div", "hy-pension-chart-periods");
+    for (const month of months) {
+      const label = make("label", "hy-pension-chart-period");
+      const input = make("input");
+      input.type = "checkbox";
+      input.checked = selectedMonths.has(month);
+      input.addEventListener("change", () => {
+        if (input.checked) selectedMonths.add(month);
+        else selectedMonths.delete(month);
+        onChange();
+      });
+      label.append(input, make("span", "", month));
+      filters.append(label);
+    }
+    return filters;
   }
   function renderPensionHistoryGraph(result, { compact = false, bindingLabel = null, onUnbind = null } = {}) {
     const initialModel = createPensionHistoryChartModel(result);
@@ -6038,6 +6114,9 @@
       return null;
     }
     const selectedMonths = new Set(initialModel.availableMonths);
+    const selectedSeries = new Set(
+      PENSION_HISTORY_SERIES.map(({ key }) => key)
+    );
     const wrapper = make(
       "section",
       `hy-pension-history-chart${compact ? " hy-pension-history-chart-compact" : ""}`
@@ -6053,28 +6132,61 @@
       unbind.addEventListener("click", onUnbind);
       header.append(unbind);
     }
-    const periodFilters = make("div", "hy-pension-chart-periods");
     const chartBody = make("div", "hy-pension-chart-body");
     const draw = () => {
-      const model = createPensionHistoryChartModel(result, selectedMonths);
-      chartBody.replaceChildren(renderLatestMetrics(model), renderSvgChart(model));
+      const completeModel = createPensionHistoryChartModel(
+        result,
+        selectedMonths
+      );
+      const graphs = make("div", "hy-pension-chart-graphs");
+      const changeSeries = ["joined", "left"].filter(
+        (key) => selectedSeries.has(key)
+      );
+      if (changeSeries.length > 0) {
+        graphs.append(
+          renderChartPanel(
+            createPensionHistoryChartModel(
+              result,
+              selectedMonths,
+              changeSeries
+            ),
+            "\uC2E0\uADDC\uCDE8\uB4DD\xB7\uC0C1\uC2E4\uAC00\uC785",
+            "hy-pension-chart-panel-change"
+          )
+        );
+      }
+      if (selectedSeries.has("subscribers")) {
+        graphs.append(
+          renderChartPanel(
+            createPensionHistoryChartModel(
+              result,
+              selectedMonths,
+              ["subscribers"]
+            ),
+            "\uAC00\uC785\uC790 \uC218",
+            "hy-pension-chart-panel-subscribers"
+          )
+        );
+      }
+      if (graphs.childElementCount === 0) {
+        graphs.append(
+          make("p", "hy-empty", "\uD45C\uC2DC\uD560 \uAC00\uC785\uC790 \uD604\uD669\uC744 \uC120\uD0DD\uD558\uC138\uC694.")
+        );
+      }
+      graphs.append(
+        createPeriodFilters(
+          initialModel.availableMonths,
+          selectedMonths,
+          draw
+        )
+      );
+      chartBody.replaceChildren(
+        renderLatestMetrics(completeModel, selectedSeries, draw),
+        graphs
+      );
     };
-    for (const month of [...initialModel.availableMonths].reverse()) {
-      const label = make("label", "hy-pension-chart-period");
-      const input = make("input");
-      input.type = "checkbox";
-      input.checked = true;
-      input.addEventListener("change", () => {
-        if (input.checked) selectedMonths.add(month);
-        else selectedMonths.delete(month);
-        draw();
-      });
-      label.append(input, make("span", "", month));
-      periodFilters.append(label);
-    }
     wrapper.append(
       header,
-      periodFilters,
       chartBody,
       make(
         "p",

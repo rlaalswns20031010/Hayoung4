@@ -1618,9 +1618,10 @@
 #hy-root .hy-pension-chart-periods {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  max-height: 72px;
-  overflow: auto;
+  gap: 6px;
+  justify-content: center;
+  overflow-x: auto;
+  padding: 2px 4px 0;
 }
 
 #hy-root .hy-pension-chart-period {
@@ -1631,29 +1632,30 @@
   color: var(--hy-muted);
   cursor: pointer;
   display: inline-flex;
-  font-size: 0.68em;
-  gap: 4px;
-  padding: 4px 7px;
+  font-size: 0.75em;
+  font-weight: 700;
+  gap: 5px;
+  padding: 5px 8px;
+  white-space: nowrap;
 }
 
 #hy-root .hy-pension-chart-period input {
   accent-color: var(--hy-blue);
-  height: 13px;
+  height: 15px;
   margin: 0;
-  width: 13px;
+  width: 15px;
 }
 
 #hy-root .hy-pension-chart-body {
-  align-items: stretch;
   display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(104px, 0.34fr) minmax(0, 1fr);
+  gap: 12px;
   min-width: 0;
 }
 
 #hy-root .hy-pension-chart-metrics {
   display: grid;
-  gap: 6px;
+  gap: 7px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 #hy-root .hy-pension-chart-metric {
@@ -1664,24 +1666,61 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  min-height: 52px;
-  padding: 7px 8px;
+  cursor: pointer;
+  min-height: 66px;
+  padding: 9px 10px;
 }
 
-#hy-root .hy-pension-chart-metric span {
+#hy-root .hy-pension-chart-metric-label {
+  align-items: center;
   color: var(--hy-muted);
-  font-size: 0.67em;
+  display: flex;
+  font-size: 0.72em;
+  font-weight: 700;
+  gap: 5px;
+  min-width: 0;
+}
+
+#hy-root .hy-pension-chart-metric-label input {
+  accent-color: var(--hy-series-color);
+  flex: 0 0 auto;
+  height: 16px;
+  margin: 0;
+  width: 16px;
 }
 
 #hy-root .hy-pension-chart-metric strong {
   color: var(--hy-navy);
-  font-size: 1.15em;
-  margin-top: 2px;
+  font-size: 1.45em;
+  line-height: 1.1;
+  margin-top: 5px;
+}
+
+#hy-root .hy-pension-chart-graphs {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+#hy-root .hy-pension-chart-panel {
+  background: #fff;
+  border: 1px solid var(--hy-border);
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 9px 4px;
+}
+
+#hy-root .hy-pension-chart-panel-title {
+  color: var(--hy-navy);
+  font-size: 0.76em;
+  padding-left: 4px;
 }
 
 #hy-root .hy-pension-history-svg {
   align-self: stretch;
-  min-height: 170px;
+  min-height: 215px;
   overflow: visible;
   width: 100%;
 }
@@ -1697,10 +1736,10 @@
   stroke-width: 1.5;
 }
 
-#hy-root .hy-pension-chart-axis-label,
-#hy-root .hy-pension-chart-month-label {
+#hy-root .hy-pension-chart-axis-label {
   fill: var(--hy-muted);
-  font-size: 14px;
+  font-size: 22px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1716,6 +1755,14 @@
   stroke: #fff;
   stroke-width: 3;
   transition: filter 100ms ease;
+}
+
+#hy-root .hy-pension-history-chart-compact .hy-pension-chart-metric strong {
+  font-size: 1.55em;
+}
+
+#hy-root .hy-pension-history-chart-compact .hy-pension-history-svg {
+  min-height: 230px;
 }
 
 #hy-root .hy-pension-chart-point:hover,
