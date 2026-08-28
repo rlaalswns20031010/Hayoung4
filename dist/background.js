@@ -378,16 +378,14 @@ ${await historyResponse.text()}`,
   // src/section-order.js
   var DEFAULT_SECTION_ORDER = Object.freeze([
     "companyInfo",
-    "postingDetails",
-    "pastPostings",
     "workforce",
+    "pastPostings",
     "pensionData",
     "enhancedSearch"
   ]);
   var PRIMARY_SECTION_ORDER = Object.freeze([
-    "postingDetails",
-    "pastPostings",
     "workforce",
+    "pastPostings",
     "pensionData"
   ]);
 
@@ -495,7 +493,6 @@ ${await historyResponse.text()}`,
     sectionOrder: [...DEFAULT_SECTION_ORDER],
     sectionVisibility: {
       companyInfo: true,
-      postingDetails: true,
       pastPostings: true,
       workforce: true,
       pensionData: true,
@@ -503,7 +500,6 @@ ${await historyResponse.text()}`,
     },
     sections: {
       companyInfo: true,
-      postingDetails: true,
       pastPostings: true,
       workforce: true,
       pensionData: true,
@@ -537,6 +533,39 @@ ${await historyResponse.text()}`,
     });
   }
   var updateDataQueue = Promise.resolve();
+
+  // src/pension-directory.js
+  function normalizeBinding(value) {
+    const name = cleanText(value?.name);
+    if (!name) return null;
+    return {
+      sourceName: cleanText(value?.sourceName) || null,
+      name,
+      address: cleanText(value?.address) || null
+    };
+  }
+  function normalizePensionCompanyBindings(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const bindings = {};
+    for (const [keyValue, bindingValue] of Object.entries(value)) {
+      const key = cleanText(keyValue);
+      const binding = normalizeBinding(bindingValue);
+      if (key && binding) bindings[key] = binding;
+    }
+    return bindings;
+  }
+  function createPensionDirectoryBindingIndex(bindingsValue) {
+    return new Map(Object.entries(bindingsValue ?? {}));
+  }
+  function resolvePensionDirectoryBinding(index, criteria = {}) {
+    if (!(index instanceof Map)) return null;
+    const companyId = cleanText(criteria.companyId);
+    if (companyId && index.has(companyId)) return index.get(companyId);
+    const companyName = normalizeCompanyName(
+      criteria.companyName ?? criteria.name
+    );
+    return companyName ? index.get(`name:${companyName}`) ?? null : null;
+  }
 
   // src/pension-pool.js
   var PENSION_POOL_SCHEMA_VERSION = 1;
@@ -597,6 +626,9 @@ ${await historyResponse.text()}`,
     if (!Number.isFinite(number)) return fallback;
     return Math.max(0, Math.round(number));
   }
+  function addOptionalCounts(left, right) {
+    return Number.isFinite(left) && Number.isFinite(right) ? left + right : false;
+  }
   function rowValue(row, indexes, key) {
     const index = indexes[key];
     return index >= 0 ? row[index] : null;
@@ -617,15 +649,21 @@ ${await historyResponse.text()}`,
   function recordKey({ name, address, month }) {
     return JSON.stringify([name, address, month]);
   }
-  function parsePensionCsv(text) {
+  function parsePensionCsv(text, { includeCompanyNames = null } = {}) {
     const [headerRow, ...dataRows] = parseCsvRows(text);
     if (!headerRow) throw new Error("\uAD6D\uBBFC\uC5F0\uAE08 CSV\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
     const indexes = resolveCsvColumnIndexes(headerRow, COLUMN_ALIASES);
     validateColumns(indexes);
+    const includedNames = includeCompanyNames instanceof Set ? new Set([...includeCompanyNames].map(cleanText).filter(Boolean)) : null;
     const aggregated = /* @__PURE__ */ new Map();
     let skippedRows = 0;
+    let filteredRows = 0;
     for (const row of dataRows) {
       const name = cleanText(rowValue(row, indexes, "name"));
+      if (includedNames && !includedNames.has(name)) {
+        filteredRows += 1;
+        continue;
+      }
       const address = cleanText(rowValue(row, indexes, "roadAddress")) || cleanText(rowValue(row, indexes, "lotAddress"));
       const month = normalizeMonth(rowValue(row, indexes, "month"));
       const subscribers = count(rowValue(row, indexes, "subscribers"));
@@ -638,8 +676,8 @@ ${await historyResponse.text()}`,
         address: address || null,
         month,
         subscribers,
-        joined: count(rowValue(row, indexes, "joined"), 0),
-        left: count(rowValue(row, indexes, "left"), 0)
+        joined: count(rowValue(row, indexes, "joined"), false),
+        left: count(rowValue(row, indexes, "left"), false)
       };
       const key = recordKey(record);
       const existing = aggregated.get(key);
@@ -648,8 +686,8 @@ ${await historyResponse.text()}`,
         existing ? {
           ...record,
           subscribers: existing.subscribers + record.subscribers,
-          joined: existing.joined + record.joined,
-          left: existing.left + record.left
+          joined: addOptionalCounts(existing.joined, record.joined),
+          left: addOptionalCounts(existing.left, record.left)
         } : record
       );
     }
@@ -661,9 +699,10 @@ ${await historyResponse.text()}`,
       records,
       diagnostics: {
         totalRows: dataRows.length,
-        acceptedRows: dataRows.length - skippedRows,
+        acceptedRows: dataRows.length - skippedRows - filteredRows,
         compressedRecords: records.length,
         skippedRows,
+        filteredRows,
         months: [...new Set(records.map(({ month }) => month))].sort().reverse()
       }
     };
@@ -703,11 +742,7 @@ ${await historyResponse.text()}`,
     const protectedCompanies = [
       ...new Set((pool.protectedCompanies ?? []).map(cleanText).filter(Boolean))
     ].sort((left, right) => left.localeCompare(right, "ko"));
-    const companyBindings = Object.fromEntries(
-      Object.entries(pool.companyBindings ?? {}).sort(
-        ([left], [right]) => left.localeCompare(right)
-      )
-    );
+    const companyBindings = pool.companyBindings ?? {};
     return { ...pool, protectedCompanies, companyBindings, companies };
   }
   function normalizeSearchText(value) {
@@ -778,7 +813,9 @@ ${await historyResponse.text()}`,
       storedNameIndex,
       exactNameIndex,
       nameGramIndex,
-      companyBindings: pool.companyBindings ?? {}
+      directoryBindings: createPensionDirectoryBindingIndex(
+        pool.companyBindings
+      )
     };
   }
   function normalizePreferredMatch(value) {
@@ -824,10 +861,11 @@ ${await historyResponse.text()}`,
     const queryText = normalizeSearchText(criteria.name);
     const queryName = normalizeCompanyName(criteria.name);
     if (!queryText) return [];
+    const resultLimit = Math.max(1, Math.min(5, Number(limit) || 5));
     const preferredMatch = normalizePreferredMatch(criteria.preferredMatch);
     const allowAutomaticBinding = criteria.allowAutomaticBinding === true;
     const directoryMatch = allowAutomaticBinding ? normalizePreferredMatch(
-      index?.companyBindings?.[cleanText(criteria.companyId)] ?? index?.companyBindings?.[`name:${normalizeCompanyName(criteria.companyName ?? criteria.name)}`]
+      resolvePensionDirectoryBinding(index?.directoryBindings, criteria)
     ) : null;
     const effectivePreferredMatch = criteria.manualBind ? preferredMatch : directoryMatch ?? preferredMatch;
     const directoryBind = Boolean(!criteria.manualBind && directoryMatch);
@@ -835,7 +873,7 @@ ${await historyResponse.text()}`,
     const exactIndexes = index?.exactNameIndex?.get(queryName) ?? [];
     const candidateIndexes = new Set(exactIndexes);
     if (Number.isInteger(preferredIndex)) candidateIndexes.add(preferredIndex);
-    if (exactIndexes.length === 0) {
+    if (candidateIndexes.size < resultLimit) {
       const nameHits = /* @__PURE__ */ new Map();
       const queryGrams = searchBigrams(queryName);
       for (const gram of queryGrams) {
@@ -875,7 +913,7 @@ ${await historyResponse.text()}`,
     }
     return ranked.sort(
       (left, right) => Number(right.manualBind) - Number(left.manualBind) || Number(right.directoryBind) - Number(left.directoryBind) || left.nameRank - right.nameRank || right.nameScore - left.nameScore || left.entry.name.localeCompare(right.entry.name, "ko")
-    ).slice(0, Math.max(1, Math.min(5, Number(limit) || 5))).map(({ entry, score, signals, manualBind, directoryBind: directoryBind2 }) => {
+    ).slice(0, resultLimit).map(({ entry, score, signals, manualBind, directoryBind: directoryBind2 }) => {
       const best = selectBestLocation(
         entry,
         effectivePreferredMatch,
@@ -939,19 +977,7 @@ ${await historyResponse.text()}`,
       updatedAt: cleanText(value.updatedAt) || empty.updatedAt,
       sources: Array.isArray(value.sources) ? clone(value.sources) : [],
       protectedCompanies: Array.isArray(value.protectedCompanies) ? value.protectedCompanies.map(cleanText).filter(Boolean) : [],
-      companyBindings: value.companyBindings && typeof value.companyBindings === "object" ? Object.fromEntries(
-        Object.entries(value.companyBindings).map(([key, binding]) => {
-          const name = cleanText(binding?.name);
-          return name ? [
-            cleanText(key),
-            {
-              sourceName: cleanText(binding?.sourceName) || null,
-              name,
-              address: cleanText(binding?.address) || null
-            }
-          ] : null;
-        }).filter(Boolean)
-      ) : {},
+      companyBindings: normalizePensionCompanyBindings(value.companyBindings),
       companies: {}
     };
     for (const [nameValue, locationsValue] of Object.entries(
@@ -970,8 +996,8 @@ ${await historyResponse.text()}`,
           if (!month || subscribers === null) continue;
           months[month] = {
             subscribers,
-            joined: count(snapshot?.joined, 0),
-            left: count(snapshot?.left, 0)
+            joined: count(snapshot?.joined, false),
+            left: count(snapshot?.left, false)
           };
         }
         if (Object.keys(months).length > 0) {
@@ -1002,8 +1028,8 @@ ${await historyResponse.text()}`,
       }
       location.months[month] = {
         subscribers,
-        joined: count(record?.joined, 0),
-        left: count(record?.left, 0)
+        joined: count(record?.joined, false),
+        left: count(record?.left, false)
       };
       pool.companies[name] = locations;
     }
@@ -1113,6 +1139,29 @@ ${await historyResponse.text()}`,
     };
   }
 
+  // src/pension-import-scope.js
+  function createPensionImportScope(pool, options = {}) {
+    return {
+      gamejobOnly: Boolean(options.gamejobOnly),
+      existingCompaniesOnly: Boolean(options.existingCompaniesOnly),
+      gamejobCompanies: new Set(pool?.protectedCompanies ?? []),
+      existingCompanies: new Set(Object.keys(pool?.companies ?? {}))
+    };
+  }
+  function filterPensionRecordsByScope(records, scope) {
+    if (!scope?.gamejobOnly && !scope?.existingCompaniesOnly) {
+      return { records, filteredOutRecordCount: 0 };
+    }
+    const included = [];
+    let filteredOutRecordCount = 0;
+    for (const record of records) {
+      const allowed = (!scope.gamejobOnly || scope.gamejobCompanies.has(record.name)) && (!scope.existingCompaniesOnly || scope.existingCompanies.has(record.name));
+      if (allowed) included.push(record);
+      else filteredOutRecordCount += 1;
+    }
+    return { records: included, filteredOutRecordCount };
+  }
+
   // src/pension-pool-storage.js
   var PENSION_POOL_STORAGE_KEY = "hayoung:pension-pool";
   var PENSION_POOL_SUMMARY_KEY = "hayoung:pension-pool-summary";
@@ -1151,21 +1200,19 @@ ${await historyResponse.text()}`,
   function importPensionCsvFiles(files, options = {}) {
     return queuePensionMutation(async () => {
       const pool = await loadPensionPool();
-      const protectedNames = new Set(pool.protectedCompanies);
-      const existingNames = new Set(Object.keys(pool.companies));
-      const gamejobOnly = Boolean(options.gamejobOnly);
-      const existingCompaniesOnly = Boolean(options.existingCompaniesOnly);
+      const importScope = createPensionImportScope(pool, options);
       const diagnostics = [];
       const batches = [];
       let filteredOutRecordCount = 0;
       for (const file of files) {
         const text = typeof file.arrayBuffer === "function" ? decodeCsvBytes(await file.arrayBuffer()) : typeof file.text === "function" ? await file.text() : file.text;
         const parsed = parsePensionCsv(text);
-        const records = parsed.records.filter((record) => {
-          const included = (!gamejobOnly || protectedNames.has(record.name)) && (!existingCompaniesOnly || existingNames.has(record.name));
-          if (!included) filteredOutRecordCount += 1;
-          return included;
-        });
+        const filtered2 = filterPensionRecordsByScope(
+          parsed.records,
+          importScope
+        );
+        const records = filtered2.records;
+        filteredOutRecordCount += filtered2.filteredOutRecordCount;
         batches.push({
           records,
           source: {

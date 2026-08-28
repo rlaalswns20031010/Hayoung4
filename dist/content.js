@@ -2082,16 +2082,14 @@
   // src/section-order.js
   var DEFAULT_SECTION_ORDER = Object.freeze([
     "companyInfo",
-    "postingDetails",
-    "pastPostings",
     "workforce",
+    "pastPostings",
     "pensionData",
     "enhancedSearch"
   ]);
   var PRIMARY_SECTION_ORDER = Object.freeze([
-    "postingDetails",
-    "pastPostings",
     "workforce",
+    "pastPostings",
     "pensionData"
   ]);
   function prioritizePrimarySections(value) {
@@ -2118,7 +2116,7 @@
   function resolveVisibleSectionOrder(availableKeys, savedOrder) {
     const available = [...availableKeys];
     const saved = uniqueKnownKeys(savedOrder, available);
-    const leadingSections = ["companyInfo", "postingDetails"].filter(
+    const leadingSections = ["companyInfo", "workforce"].filter(
       (key) => available.includes(key) && !saved.includes(key)
     );
     return [.../* @__PURE__ */ new Set([...leadingSections, ...saved, ...available])];
@@ -2672,7 +2670,7 @@
   }
 
   // src/storage-schema.js
-  var SCHEMA_VERSION = 20;
+  var SCHEMA_VERSION = 21;
   var V3_SECTION_ORDER = Object.freeze([
     "companyInfo",
     "workforce",
@@ -2740,7 +2738,6 @@
     sectionOrder: [...DEFAULT_SECTION_ORDER],
     sectionVisibility: {
       companyInfo: true,
-      postingDetails: true,
       pastPostings: true,
       workforce: true,
       pensionData: true,
@@ -2748,7 +2745,6 @@
     },
     sections: {
       companyInfo: true,
-      postingDetails: true,
       pastPostings: true,
       workforce: true,
       pensionData: true,
@@ -3158,6 +3154,23 @@
       schemaVersion: 20
     };
   }
+  function migrateV20ToV21(value) {
+    const settings = { ...value.settings ?? {} };
+    const sections = { ...settings.sections ?? {} };
+    const sectionVisibility = { ...settings.sectionVisibility ?? {} };
+    delete sections.postingDetails;
+    delete sectionVisibility.postingDetails;
+    return {
+      ...value,
+      settings: {
+        ...settings,
+        sections,
+        sectionVisibility,
+        sectionOrder: prioritizePrimarySections(settings.sectionOrder)
+      },
+      schemaVersion: 21
+    };
+  }
   var MIGRATIONS = /* @__PURE__ */ new Map([
     [0, migrateV0ToV1],
     [1, migrateV1ToV2],
@@ -3178,7 +3191,8 @@
     [16, migrateV16ToV17],
     [17, migrateV17ToV18],
     [18, migrateV18ToV19],
-    [19, migrateV19ToV20]
+    [19, migrateV19ToV20],
+    [20, migrateV20ToV21]
   ]);
   function migrateData(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -3776,6 +3790,35 @@
     return candidates.find(isUsableAlert) ?? [getFallbackAlert(viewModel)].find(isUsableAlert) ?? null;
   }
 
+  // src/pension-directory.js
+  function normalizeBinding(value) {
+    const name = cleanText(value?.name);
+    if (!name) return null;
+    return {
+      sourceName: cleanText(value?.sourceName) || null,
+      name,
+      address: cleanText(value?.address) || null
+    };
+  }
+  function normalizePensionCompanyBindings(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const bindings = {};
+    for (const [keyValue, bindingValue] of Object.entries(value)) {
+      const key = cleanText(keyValue);
+      const binding = normalizeBinding(bindingValue);
+      if (key && binding) bindings[key] = binding;
+    }
+    return bindings;
+  }
+  function filterPensionCompanyBindings(bindingsValue, companyNames) {
+    const allowedNames = companyNames instanceof Set ? companyNames : new Set(companyNames ?? []);
+    const bindings = {};
+    for (const [key, binding] of Object.entries(bindingsValue ?? {})) {
+      if (allowedNames.has(cleanText(binding?.name))) bindings[key] = binding;
+    }
+    return bindings;
+  }
+
   // src/pension-pool.js
   var PENSION_POOL_SCHEMA_VERSION = 1;
   var OFFICIAL_PENSION_MIN_CURRENT_SUBSCRIBERS = 10;
@@ -3835,6 +3878,9 @@
     if (!Number.isFinite(number)) return fallback;
     return Math.max(0, Math.round(number));
   }
+  function addOptionalCounts(left, right) {
+    return Number.isFinite(left) && Number.isFinite(right) ? left + right : false;
+  }
   function rowValue(row, indexes, key) {
     const index = indexes[key];
     return index >= 0 ? row[index] : null;
@@ -3855,15 +3901,21 @@
   function recordKey({ name, address, month }) {
     return JSON.stringify([name, address, month]);
   }
-  function parsePensionCsv(text) {
+  function parsePensionCsv(text, { includeCompanyNames = null } = {}) {
     const [headerRow, ...dataRows] = parseCsvRows(text);
     if (!headerRow) throw new Error("\uAD6D\uBBFC\uC5F0\uAE08 CSV\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
     const indexes = resolveCsvColumnIndexes(headerRow, COLUMN_ALIASES2);
     validateColumns(indexes);
+    const includedNames = includeCompanyNames instanceof Set ? new Set([...includeCompanyNames].map(cleanText).filter(Boolean)) : null;
     const aggregated = /* @__PURE__ */ new Map();
     let skippedRows = 0;
+    let filteredRows = 0;
     for (const row of dataRows) {
       const name = cleanText(rowValue(row, indexes, "name"));
+      if (includedNames && !includedNames.has(name)) {
+        filteredRows += 1;
+        continue;
+      }
       const address = cleanText(rowValue(row, indexes, "roadAddress")) || cleanText(rowValue(row, indexes, "lotAddress"));
       const month = normalizeMonth(rowValue(row, indexes, "month"));
       const subscribers = count(rowValue(row, indexes, "subscribers"));
@@ -3876,8 +3928,8 @@
         address: address || null,
         month,
         subscribers,
-        joined: count(rowValue(row, indexes, "joined"), 0),
-        left: count(rowValue(row, indexes, "left"), 0)
+        joined: count(rowValue(row, indexes, "joined"), false),
+        left: count(rowValue(row, indexes, "left"), false)
       };
       const key = recordKey(record);
       const existing = aggregated.get(key);
@@ -3886,8 +3938,8 @@
         existing ? {
           ...record,
           subscribers: existing.subscribers + record.subscribers,
-          joined: existing.joined + record.joined,
-          left: existing.left + record.left
+          joined: addOptionalCounts(existing.joined, record.joined),
+          left: addOptionalCounts(existing.left, record.left)
         } : record
       );
     }
@@ -3899,9 +3951,10 @@
       records,
       diagnostics: {
         totalRows: dataRows.length,
-        acceptedRows: dataRows.length - skippedRows,
+        acceptedRows: dataRows.length - skippedRows - filteredRows,
         compressedRecords: records.length,
         skippedRows,
+        filteredRows,
         months: [...new Set(records.map(({ month }) => month))].sort().reverse()
       }
     };
@@ -3941,11 +3994,7 @@
     const protectedCompanies = [
       ...new Set((pool.protectedCompanies ?? []).map(cleanText).filter(Boolean))
     ].sort((left, right) => left.localeCompare(right, "ko"));
-    const companyBindings = Object.fromEntries(
-      Object.entries(pool.companyBindings ?? {}).sort(
-        ([left], [right]) => left.localeCompare(right)
-      )
-    );
+    const companyBindings = pool.companyBindings ?? {};
     return { ...pool, protectedCompanies, companyBindings, companies };
   }
   function normalizePensionPool(value) {
@@ -3960,19 +4009,7 @@
       updatedAt: cleanText(value.updatedAt) || empty.updatedAt,
       sources: Array.isArray(value.sources) ? clone3(value.sources) : [],
       protectedCompanies: Array.isArray(value.protectedCompanies) ? value.protectedCompanies.map(cleanText).filter(Boolean) : [],
-      companyBindings: value.companyBindings && typeof value.companyBindings === "object" ? Object.fromEntries(
-        Object.entries(value.companyBindings).map(([key, binding]) => {
-          const name = cleanText(binding?.name);
-          return name ? [
-            cleanText(key),
-            {
-              sourceName: cleanText(binding?.sourceName) || null,
-              name,
-              address: cleanText(binding?.address) || null
-            }
-          ] : null;
-        }).filter(Boolean)
-      ) : {},
+      companyBindings: normalizePensionCompanyBindings(value.companyBindings),
       companies: {}
     };
     for (const [nameValue, locationsValue] of Object.entries(
@@ -3991,8 +4028,8 @@
           if (!month || subscribers === null) continue;
           months[month] = {
             subscribers,
-            joined: count(snapshot?.joined, 0),
-            left: count(snapshot?.left, 0)
+            joined: count(snapshot?.joined, false),
+            left: count(snapshot?.left, false)
           };
         }
         if (Object.keys(months).length > 0) {
@@ -4043,8 +4080,8 @@
       }
       location2.months[month] = {
         subscribers,
-        joined: count(record?.joined, 0),
-        left: count(record?.left, 0)
+        joined: count(record?.joined, false),
+        left: count(record?.left, false)
       };
       pool.companies[name] = locations;
     }
@@ -4080,10 +4117,9 @@
     const companies = Object.fromEntries(
       Object.entries(pool.companies).filter(([name]) => protectedNames.has(name))
     );
-    const companyBindings = Object.fromEntries(
-      Object.entries(pool.companyBindings).filter(
-        ([, binding]) => protectedNames.has(cleanText(binding?.name))
-      )
+    const companyBindings = filterPensionCompanyBindings(
+      pool.companyBindings,
+      protectedNames
     );
     return sortPool({ ...pool, companies, companyBindings });
   }
@@ -4135,6 +4171,29 @@
     };
   }
 
+  // src/pension-import-scope.js
+  function createPensionImportScope(pool, options = {}) {
+    return {
+      gamejobOnly: Boolean(options.gamejobOnly),
+      existingCompaniesOnly: Boolean(options.existingCompaniesOnly),
+      gamejobCompanies: new Set(pool?.protectedCompanies ?? []),
+      existingCompanies: new Set(Object.keys(pool?.companies ?? {}))
+    };
+  }
+  function filterPensionRecordsByScope(records, scope) {
+    if (!scope?.gamejobOnly && !scope?.existingCompaniesOnly) {
+      return { records, filteredOutRecordCount: 0 };
+    }
+    const included = [];
+    let filteredOutRecordCount = 0;
+    for (const record of records) {
+      const allowed = (!scope.gamejobOnly || scope.gamejobCompanies.has(record.name)) && (!scope.existingCompaniesOnly || scope.existingCompanies.has(record.name));
+      if (allowed) included.push(record);
+      else filteredOutRecordCount += 1;
+    }
+    return { records: included, filteredOutRecordCount };
+  }
+
   // src/pension-pool-storage.js
   var PENSION_POOL_STORAGE_KEY = "hayoung:pension-pool";
   var PENSION_POOL_SUMMARY_KEY = "hayoung:pension-pool-summary";
@@ -4170,21 +4229,19 @@
   function importPensionCsvFiles(files, options = {}) {
     return queuePensionMutation(async () => {
       const pool = await loadPensionPool();
-      const protectedNames = new Set(pool.protectedCompanies);
-      const existingNames = new Set(Object.keys(pool.companies));
-      const gamejobOnly = Boolean(options.gamejobOnly);
-      const existingCompaniesOnly = Boolean(options.existingCompaniesOnly);
+      const importScope = createPensionImportScope(pool, options);
       const diagnostics = [];
       const batches = [];
       let filteredOutRecordCount = 0;
       for (const file of files) {
         const text = typeof file.arrayBuffer === "function" ? decodeCsvBytes(await file.arrayBuffer()) : typeof file.text === "function" ? await file.text() : file.text;
         const parsed = parsePensionCsv(text);
-        const records = parsed.records.filter((record) => {
-          const included = (!gamejobOnly || protectedNames.has(record.name)) && (!existingCompaniesOnly || existingNames.has(record.name));
-          if (!included) filteredOutRecordCount += 1;
-          return included;
-        });
+        const filtered2 = filterPensionRecordsByScope(
+          parsed.records,
+          importScope
+        );
+        const records = filtered2.records;
+        filteredOutRecordCount += filtered2.filteredOutRecordCount;
         batches.push({
           records,
           source: {
@@ -4407,8 +4464,7 @@
   // src/ui/section-shell.js
   var SECTION_HELP = Object.freeze({
     companyInfo: "\uCC44\uC6A9 \uC0AC\uC774\uD2B8\uC758 \uAE30\uC5C5 \uC0C1\uC138\uC815\uBCF4\uC640 \uCD5C\uADFC \uCC44\uC6A9 \uD604\uD669\uC744 \uBD88\uB7EC\uC635\uB2C8\uB2E4.",
-    postingDetails: "\uACF5\uACE0 \uC54C\uB9BC\uACFC \uAC8C\uC784\uC7A1 \uD398\uC774\uC9C0 \uD45C\uC2DC \uC0AC\uC6D0\uC218, \uAD6D\uBBFC\uC5F0\uAE08 \uAC00\uC785\uC790, \uC0C1\uC138 \uACF5\uACE0 \uAE30\uB85D\uC744 \uD45C\uC2DC\uD569\uB2C8\uB2E4.",
-    pastPostings: "\uC11C\uBC84 \uBD80\uB2F4\uC744 \uC904\uC774\uAE30 \uC704\uD574 \uACF5\uACE0\uB97C \uD55C \uBC88\uC5D0 \uD55C \uD398\uC774\uC9C0\uB9CC \uD638\uCD9C\uD569\uB2C8\uB2E4.",
+    pastPostings: "\uD604\uC7AC \uACF5\uACE0 \uC0C1\uC138\uC640 \uACFC\uAC70 \uACF5\uACE0 \uBAA9\uB85D\uC744 \uD45C\uC2DC\uD558\uBA70, \uACF5\uACE0\uB294 \uD55C \uBC88\uC5D0 \uD55C \uD398\uC774\uC9C0\uB9CC \uD638\uCD9C\uD569\uB2C8\uB2E4.",
     workforce: [
       "\uD68C\uC0AC\uBA85\uC73C\uB85C \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uD6C4\uBCF4\uB97C \uAC80\uC0C9\uD558\uACE0 \uC6D4\uBCC4 \uAC00\uC785\uC790 \uBCC0\uD654\uB97C \uBE44\uAD50\uD569\uB2C8\uB2E4.",
       { text: PENSION_ACQUISITION_WARNING, warning: true },
@@ -4537,14 +4593,13 @@
   function getVisibleSectionChoices(viewModel) {
     return [
       ...viewModel.site?.id === "jobkorea" ? [["companyInfo", "\uCC44\uC6A9 \uD68C\uC0AC \uC815\uBCF4"]] : [],
-      ...viewModel.site?.id === "gamejob" && viewModel.company ? [["postingDetails", "\uC77C\uBC18"]] : [],
+      ...viewModel.site?.id === "gamejob" ? [
+        ["workforce", "\uC77C\uBC18"],
+        ["pastPostings", "\uACF5\uACE0"],
+        ["pensionData", "\uC5F0\uAE08 \uB370\uC774\uD130"]
+      ] : [],
       ...viewModel.gamejobListMode ? [["enhancedSearch", "\uAC80\uC0C9 \uAC15\uD654"]] : [],
-      [
-        "pastPostings",
-        viewModel.site?.id === "gamejob" ? "\uACF5\uACE0 \uC0C1\uC138" : "\uACF5\uACE0 \uD638\uCD9C"
-      ],
-      ["workforce", "\uC5F0\uAE08 \uBE44\uAD50"],
-      ["pensionData", "\uC5F0\uAE08 \uB370\uC774\uD130"]
+      ...viewModel.site?.id === "jobkorea" ? [["pastPostings", "\uACF5\uACE0 \uD638\uCD9C"]] : []
     ];
   }
   function renderWindowOptions(viewModel, actions2) {
@@ -5138,6 +5193,64 @@
       minute: "2-digit"
     });
   }
+  function renderCurrentGamejobPostingDetail(viewModel, actions2) {
+    const posting = viewModel.posting;
+    if (!posting) return null;
+    const block = make("section", "hy-general-block hy-current-posting-detail");
+    block.append(make("h3", "hy-general-block-title", "\uD604\uC7AC \uACF5\uACE0 \uC0C1\uC138"));
+    const facts = make("div", "hy-posting-detail-facts");
+    appendKeyValue(
+      facts,
+      "\uACF5\uACE0 \uB4F1\uB85D\uC2DC\uAC04",
+      posting.registeredText ?? posting.registeredAt ?? posting.openedAt ?? "\u2014"
+    );
+    appendKeyValue(
+      facts,
+      "\uB9C8\uC9C0\uB9C9 \uC218\uC815 \uC2DC\uAC04",
+      posting.lastModifiedText ?? posting.lastModifiedAt ?? "\u2014"
+    );
+    const saveButton = makeButton(
+      "\uC0C1\uC138 \uAE30\uB85D \uC800\uC7A5",
+      "hy-primary hy-save-action",
+      () => actions2.onSaveGamejobPostingDetail()
+    );
+    block.append(facts, saveButton);
+    const records = viewModel.companyData?.gamejobPostingDetails?.[posting.id]?.records ?? [];
+    const history = make("details", "hy-general-history");
+    const summary = make("summary", "hy-general-history-summary");
+    summary.append(
+      make("span", "", `\uC800\uC7A5 \uAE30\uB85D ${formatNumber(records.length)}\uAC1C`),
+      make("span", "hy-general-history-chevron")
+    );
+    history.append(summary);
+    const list = make("div", "hy-general-history-list");
+    if (records.length === 0) {
+      list.append(
+        make("p", "hy-empty hy-compact", "\uC800\uC7A5\uB41C \uC0C1\uC138 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.")
+      );
+    } else {
+      for (const record of records) {
+        const row = make("div", "hy-general-posting-record");
+        row.append(
+          make(
+            "strong",
+            "",
+            record.lastModifiedText ?? record.lastModifiedAt ?? "\uC218\uC815\uC2DC\uAC04 \uD655\uC778 \uBD88\uAC00"
+          ),
+          make(
+            "span",
+            "",
+            `\uB4F1\uB85D ${record.registeredText ?? record.registeredAt ?? "\u2014"}`
+          ),
+          make("small", "", `\uC800\uC7A5 ${formatSavedTime(record.savedAt)}`)
+        );
+        list.append(row);
+      }
+    }
+    history.append(list);
+    block.append(history);
+    return block;
+  }
   function getPastPostingRows(viewModel, { ignoreSearch = false } = {}) {
     const siteId = viewModel.site?.id;
     const recruitment = viewModel.pastRecruitments ?? {};
@@ -5476,27 +5589,20 @@
     const selectedId = viewModel.pastPostingUi?.selectedPostingId;
     const selectedRow = allRows.find((row) => row.posting.id === selectedId);
     if (viewModel.site?.id === "gamejob") {
-      const tabs = make("div", "hy-past-tabs");
-      const listTab = makeButton(
-        "\uACF5\uACE0 \uBAA9\uB85D",
-        "hy-text-button",
-        () => actions2.onShowPastPostingList()
+      const currentPostingDetail = renderCurrentGamejobPostingDetail(
+        viewModel,
+        actions2
       );
-      if (!selectedRow) listTab.classList.add("hy-past-tab-active");
-      tabs.append(listTab);
+      if (currentPostingDetail) content.append(currentPostingDetail);
+      content.append(make("h3", "hy-past-list-heading", "\uACF5\uACE0 \uBAA9\uB85D"));
       if (selectedRow) {
-        const detailTab = makeButton(
-          selectedRow.posting.title,
-          "hy-text-button hy-past-tab-active",
-          () => {
-          }
+        const back = makeButton(
+          "\uACF5\uACE0 \uBAA9\uB85D\uC73C\uB85C",
+          "hy-secondary hy-compact-button",
+          () => actions2.onShowPastPostingList()
         );
-        detailTab.setAttribute("aria-current", "page");
-        tabs.append(detailTab);
-      }
-      content.append(tabs);
-      if (selectedRow) {
         content.append(
+          back,
           renderGamejobPastPostingDetail(viewModel, actions2, selectedRow)
         );
         return content;
@@ -5531,469 +5637,6 @@
     });
     content.append(list, createPastLoadControl(viewModel, actions2, list));
     return content;
-  }
-
-  // src/ui/pension-sections.js
-  function createPensionImportFilter(settings, key, title, description, actions2) {
-    const label = make("label", "hy-option-row");
-    label.dataset.tooltip = description;
-    const input = make("input", "hy-option-switch");
-    input.type = "checkbox";
-    input.checked = Boolean(settings?.[key]);
-    input.setAttribute("aria-label", `${title}: ${description}`);
-    input.addEventListener(
-      "change",
-      () => actions2.onSettingsChange({ [key]: input.checked })
-    );
-    label.append(make("strong", "", title), input);
-    return label;
-  }
-  function formatPensionSignal(value) {
-    return Number.isFinite(value) ? `${value}%` : "\uD655\uC778 \uBD88\uAC00";
-  }
-  function createPensionScoreBadge(label, result, className = "") {
-    const nameSignal = `\uC774\uB984 ${formatPensionSignal(result.signals?.name)}`;
-    const addressSignal = `\uC8FC\uC18C ${formatPensionSignal(result.signals?.address)}`;
-    const badge = make(
-      "span",
-      `hy-score hy-pension-score ${className}`.trim(),
-      label
-    );
-    badge.tabIndex = 0;
-    badge.setAttribute("aria-label", `${label}. ${nameSignal}. ${addressSignal}`);
-    const tooltip = make("span", "hy-help-tooltip hy-pension-score-tooltip");
-    tooltip.append(make("span", "", nameSignal), make("span", "", addressSignal));
-    badge.append(tooltip);
-    return badge;
-  }
-  function findBoundPensionResult(viewModel) {
-    const results = viewModel.pensionPoolUi?.results ?? [];
-    const manualMatch = viewModel.pensionBinding;
-    if (manualMatch) {
-      const matched = results.find(
-        (result) => isSamePensionMatch(manualMatch, {
-          name: result.name,
-          address: result.matchedAddress
-        })
-      );
-      if (matched) return matched;
-    }
-    return results.find((result) => result.manualBind || result.directoryBind) ?? null;
-  }
-  function getDefaultExpandedPensionResultIndex(results, boundMatch, cachedMatch) {
-    const topResult = results?.[0];
-    if (!topResult) return -1;
-    const matchTarget = {
-      name: topResult.name,
-      address: topResult.matchedAddress
-    };
-    const preferred = Boolean(
-      topResult.manualBind || topResult.directoryBind || isSamePensionMatch(boundMatch, matchTarget) || isSamePensionMatch(cachedMatch, matchTarget)
-    );
-    const topNameScore = topResult.signals?.name ?? topResult.score;
-    return preferred || Number(topNameScore) >= 90 ? 0 : -1;
-  }
-  function getPensionVersionStatus(viewModel) {
-    const policy = viewModel.pensionPolicy ?? {};
-    const status = viewModel.pensionPolicyStatus ?? {};
-    if (!policy.requiredLatestMonth || status.checkDue) {
-      return { label: "\uD655\uC778 \uBD88\uAC00", className: "hy-version-status-unknown" };
-    }
-    if (!status.latestInstalled) {
-      return { label: "\uC124\uCE58 \uD544\uC694", className: "hy-version-status-required" };
-    }
-    return { label: "\uCD5C\uC2E0 \uBC84\uC804", className: "hy-version-status-current" };
-  }
-  function renderPensionActivity(activity) {
-    if (!activity?.busy) return null;
-    const status = make("div", "hy-pension-activity");
-    status.setAttribute("role", "status");
-    status.setAttribute("aria-live", "polite");
-    status.append(
-      make("span", "hy-pension-spinner"),
-      make("span", "", activity.label ?? "\uC5F0\uAE08 \uB370\uC774\uD130 \uCC98\uB9AC \uC911")
-    );
-    return status;
-  }
-  function renderPensionPoolSearch(container, viewModel, actions2) {
-    const summary = viewModel.pensionPoolSummary;
-    const ui = viewModel.pensionPoolUi;
-    const activity = renderPensionActivity(viewModel.pensionActivity);
-    if (activity) container.append(activity);
-    if (!summary?.companyCount) {
-      container.append(
-        make("p", "hy-empty", "\uBA3C\uC800 \uAD6D\uBBFC\uC5F0\uAE08 CSV\uB97C \uC5F0\uAE08 \uD480\uC5D0 \uCD94\uAC00\uD558\uC138\uC694."),
-        makeButton(
-          "\uC5F0\uAE08 CSV \uCD94\uAC00",
-          "hy-primary",
-          () => actions2.onPickPensionCsvFiles()
-        )
-      );
-      return;
-    }
-    const searchRow = make("div", "hy-pension-search-row");
-    const input = make("input", "hy-input");
-    input.type = "search";
-    input.placeholder = "\uD68C\uC0AC\uBA85 \uAC80\uC0C9";
-    input.value = ui?.query ?? "";
-    const search = () => actions2.onSearchPensionPool(input.value);
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") search();
-    });
-    searchRow.append(
-      input,
-      makeButton(
-        "\uAC80\uC0C9",
-        "hy-primary",
-        search,
-        "\uC5F0\uAE08 \uD480\uC5D0\uC11C \uD68C\uC0AC\uBA85\uB9CC \uAC80\uC0C9\uD574 \uC0C1\uC704 5\uAC1C\uB97C \uD45C\uC2DC\uD569\uB2C8\uB2E4."
-      )
-    );
-    container.append(searchRow);
-    if (!ui?.searched) {
-      container.append(
-        make(
-          "p",
-          "hy-empty hy-pension-search-help",
-          "\uD68C\uC0AC\uBA85\uC744 \uC785\uB825\uD558\uBA74 \uC0C1\uC704 5\uAC1C \uC5F0\uAE08 \uC0AC\uC5C5\uC7A5\uC744 \uD45C\uC2DC\uD569\uB2C8\uB2E4."
-        )
-      );
-      return;
-    }
-    if (ui.results.length === 0) {
-      container.append(make("p", "hy-empty", "\uC77C\uCE58\uD558\uB294 \uC5F0\uAE08 \uD68C\uC0AC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."));
-      return;
-    }
-    const resultList = make("div", "hy-pension-result-list");
-    const expandedResultIndex = getDefaultExpandedPensionResultIndex(
-      ui.results,
-      viewModel.pensionBinding,
-      viewModel.pensionCachedMatch
-    );
-    for (const [resultIndex, result] of ui.results.entries()) {
-      const company = make("article", "hy-pension-result-company");
-      const companyTop = make("div", "hy-pension-result-top");
-      const companyDetails = make("div", "hy-pension-result-details");
-      const initiallyExpanded = resultIndex === expandedResultIndex;
-      company.classList.toggle(
-        "hy-pension-result-company-collapsed",
-        !initiallyExpanded
-      );
-      companyDetails.hidden = !initiallyExpanded;
-      const manuallyBound = Boolean(
-        result.manualBind || isSamePensionMatch(viewModel.pensionBinding, {
-          name: result.name,
-          address: result.matchedAddress
-        })
-      );
-      const lowAddressBinding = Boolean(
-        manuallyBound && viewModel.pensionBinding?.addressWarning
-      );
-      if (lowAddressBinding) {
-        company.classList.add("hy-pension-result-company-warning");
-        company.title = "\uC8FC\uC18C \uC77C\uCE58\uC728 30% \uBBF8\uB9CC \uB610\uB294 \uD655\uC778 \uBD88\uAC00 \uC0C1\uD0DC\uC5D0\uC11C \uBC14\uC778\uB4DC\uB428";
-      }
-      const directoryBound = Boolean(result.directoryBind && !manuallyBound);
-      const bindRestriction = getPensionBindingRestriction(
-        result,
-        viewModel.pensionBindingEmployeeCount,
-        viewModel.pensionBindingSourceName
-      );
-      const actionsRow = make("div", "hy-pension-result-actions");
-      const bindButton = makeButton(
-        manuallyBound || directoryBound ? "\uBC14\uC778\uB4DC \uD574\uC81C" : "\uBC14\uC778\uB4DC",
-        manuallyBound || directoryBound ? "hy-secondary hy-compact-button" : "hy-primary hy-compact-button",
-        () => manuallyBound || directoryBound ? actions2.onUnbindPensionCompany() : actions2.onBindPensionCompany(result),
-        manuallyBound ? `${viewModel.pensionBindingSourceName}\uC758 \uC218\uB3D9 \uBC14\uC778\uB4DC \uD574\uC81C` : directoryBound ? `${viewModel.pensionBindingSourceName}\uC758 \uAE30\uBCF8 \uBC14\uC778\uB529 \uD574\uC81C` : bindRestriction || `${viewModel.pensionBindingSourceName || "\uAC80\uC0C9\uC5B4"}\uC640 \uC774 \uC5F0\uAE08 \uD68C\uC0AC\uB97C 1:1\uB85C \uC5F0\uACB0`
-      );
-      bindButton.disabled = !manuallyBound && !directoryBound && Boolean(bindRestriction);
-      const collapseButton = makeButton(
-        "",
-        "hy-pension-company-toggle",
-        () => {
-          const collapsed = company.classList.toggle(
-            "hy-pension-result-company-collapsed"
-          );
-          companyDetails.hidden = collapsed;
-          collapseButton.setAttribute("aria-expanded", String(!collapsed));
-          const toggleLabel = collapsed ? "\uD68C\uC0AC \uC0C1\uC138 \uD3BC\uCE58\uAE30" : "\uD68C\uC0AC \uC0C1\uC138 \uC811\uAE30";
-          collapseButton.title = toggleLabel;
-          collapseButton.setAttribute("aria-label", toggleLabel);
-        },
-        initiallyExpanded ? "\uD68C\uC0AC \uC0C1\uC138 \uC811\uAE30" : "\uD68C\uC0AC \uC0C1\uC138 \uD3BC\uCE58\uAE30"
-      );
-      collapseButton.setAttribute("aria-expanded", String(initiallyExpanded));
-      collapseButton.setAttribute(
-        "aria-label",
-        initiallyExpanded ? "\uD68C\uC0AC \uC0C1\uC138 \uC811\uAE30" : "\uD68C\uC0AC \uC0C1\uC138 \uD3BC\uCE58\uAE30"
-      );
-      collapseButton.append(make("span", "hy-pension-company-chevron"));
-      actionsRow.append(bindButton, collapseButton);
-      const scoreBadge = manuallyBound ? createPensionScoreBadge("\uC218\uB3D9 \uBC14\uC778\uB4DC", result, "hy-score-manual") : directoryBound ? createPensionScoreBadge("\uAE30\uBCF8 \uBC14\uC778\uB529", result, "hy-score-manual") : createPensionScoreBadge(`${result.score}\uC810`, result);
-      companyTop.append(
-        make("strong", "hy-pension-result-name", result.name),
-        scoreBadge,
-        actionsRow
-      );
-      company.append(
-        companyTop,
-        make(
-          "p",
-          "hy-pension-result-meta",
-          result.latest ? `\uCD5C\uC2E0 \uAC00\uC785\uC790 ${formatNumber(result.latest.subscribers)}\uBA85 \xB7 ${result.latest.month}` : "\uCD5C\uC2E0 \uAC00\uC785\uC790 \uD655\uC778 \uBD88\uAC00"
-        )
-      );
-      for (const location2 of result.locations) {
-        const address = location2.address ?? null;
-        const locationBlock = make("div", "hy-pension-location");
-        locationBlock.append(
-          make("p", "hy-pension-location-address", address ?? "\uC8FC\uC18C \uBBF8\uAE30\uB85D")
-        );
-        const months = make("div", "hy-pension-month-list");
-        const orderedMonths = Object.entries(location2.months).sort(
-          ([left], [right]) => right.localeCompare(left)
-        );
-        for (const [monthIndex, [month, snapshot]] of orderedMonths.entries()) {
-          const row = make("div", "hy-pension-month-row");
-          row.classList.toggle("hy-pension-month-row-latest", monthIndex === 0);
-          const values = make("span", "hy-pension-month-values");
-          values.append(
-            make("strong", "", month),
-            document.createTextNode(
-              ` \uAE30\uC874 \uAC00\uC785\uC790 \uC218 ${formatNumber(snapshot.subscribers)} \xB7 ${PENSION_ACQUISITION_LABEL} ${formatNumber(snapshot.joined)} \xB7 ${PENSION_LOSS_LABEL} ${formatNumber(snapshot.left)}`
-            )
-          );
-          row.append(values);
-          months.append(row);
-        }
-        locationBlock.append(months);
-        companyDetails.append(locationBlock);
-      }
-      company.append(companyDetails);
-      resultList.append(company);
-    }
-    container.append(resultList);
-  }
-  function renderWorkforce(viewModel, actions2) {
-    const pensionSummary = viewModel.pensionPoolSummary;
-    const { details, content, heading } = createSection(
-      "\uC5F0\uAE08 \uBE44\uAD50",
-      "workforce",
-      viewModel.settings,
-      actions2,
-      {
-        helpContent: [
-          "\uD68C\uC0AC\uBA85\uC73C\uB85C \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uD6C4\uBCF4\uB97C \uAC80\uC0C9\uD569\uB2C8\uB2E4.",
-          `\uD68C\uC0AC ${formatNumber(pensionSummary?.companyCount)}\uAC1C`,
-          `\uC6D4 \uAE30\uB85D ${formatNumber(pensionSummary?.snapshotCount)}\uAC1C`
-        ]
-      }
-    );
-    const companyCount = Number(pensionSummary?.companyCount);
-    if (Number.isFinite(companyCount) && companyCount > 0 && companyCount <= 2e3) {
-      heading.append(
-        createHelpMark(
-          [
-            "[\uAC8C\uC784\uC7A1 \uAE30\uBCF8 \uC138\uD305 \uC0AC\uC6A9\uC911]",
-            "\uC5F0\uAE08 \uB370\uC774\uD130\uC5D0\uC11C \uCD5C\uC2E0 \uAE30\uB85D\uC744 \uB2E4\uC6B4\uB85C\uB4DC \uD558\uC138\uC694"
-          ],
-          "hy-pension-pool-hint",
-          "\u{1F4A1}"
-        )
-      );
-    }
-    renderPensionPoolSearch(content, viewModel, actions2);
-    return details;
-  }
-  function renderPensionData(viewModel, actions2) {
-    const { details, content, headerActions } = createSection(
-      "\uC5F0\uAE08 \uB370\uC774\uD130",
-      "pensionData",
-      viewModel.settings,
-      actions2
-    );
-    const versionStatus = getPensionVersionStatus(viewModel);
-    headerActions.append(
-      make(
-        "span",
-        `hy-version-status ${versionStatus.className}`,
-        versionStatus.label
-      )
-    );
-    const pension = viewModel.pensionPoolSummary;
-    const activity = renderPensionActivity(viewModel.pensionActivity);
-    if (activity) content.append(activity);
-    const monthRange = pension?.latestMonth ? pension.latestMonth === pension.oldestMonth ? pension.latestMonth : `${pension.latestMonth} ~ ${pension.oldestMonth}` : "\uC6D4 \uB370\uC774\uD130 \uC5C6\uC74C";
-    content.append(
-      make(
-        "p",
-        "hy-version hy-pension-summary",
-        `\uD68C\uC0AC ${formatNumber(pension?.companyCount)}\uAC1C \xB7 \uC8FC\uC18C ${formatNumber(pension?.locationCount)}\uAC1C \xB7 \uC6D4 \uC2A4\uB0C5\uC0F7 ${formatNumber(pension?.snapshotCount)}\uAC1C \xB7 ${monthRange}`
-      )
-    );
-    const controls = make("div", "hy-data-controls");
-    controls.append(
-      makeButton(
-        "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138 \uC5F4\uAE30 \u2197",
-        "hy-secondary",
-        () => actions2.onOpenPensionDataPortal()
-      ),
-      makeButton(
-        "\uC5F0\uAE08 CSV \uCD94\uAC00",
-        "hy-secondary",
-        () => actions2.onPickPensionCsvFiles()
-      )
-    );
-    content.append(
-      controls,
-      renderPensionMonthManager(viewModel, actions2),
-      renderPensionPortalControls(viewModel, actions2)
-    );
-    return details;
-  }
-  function renderPensionMonthManager(viewModel, actions2) {
-    const wrapper = make("div", "hy-pension-source-block");
-    wrapper.append(
-      make("h4", "hy-pension-source-title", "\uC800\uC7A5\uB41C \uC6D4 \uC0AD\uC81C"),
-      make(
-        "p",
-        "hy-option-description",
-        "\uC120\uD0DD\uD55C \uC6D4\uC744 \uBAA8\uB4E0 \uD68C\uC0AC\uC640 \uC8FC\uC18C\uC5D0\uC11C \uC0AD\uC81C\uD569\uB2C8\uB2E4."
-      )
-    );
-    const months = make("div", "hy-pension-stored-months");
-    for (const month of viewModel.pensionPoolSummary?.months ?? []) {
-      const row = make("div", "hy-pension-stored-month");
-      row.append(
-        make("strong", "", month),
-        makeButton(
-          "\uC0AD\uC81C",
-          "hy-attention hy-compact-button",
-          () => {
-            if (confirm(`${month} \uC5F0\uAE08 \uAE30\uB85D\uC744 \uBAA8\uB4E0 \uD68C\uC0AC\uC5D0\uC11C \uC0AD\uC81C\uD560\uAE4C\uC694?`)) {
-              actions2.onDeletePensionPoolMonth(month);
-            }
-          },
-          `${month} \uC804\uCCB4 \uC0AD\uC81C`
-        )
-      );
-      months.append(row);
-    }
-    wrapper.append(
-      months.childElementCount ? months : make("p", "hy-empty", "\uC0AD\uC81C\uD560 \uC6D4 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.")
-    );
-    return wrapper;
-  }
-  function renderPensionPortalControls(viewModel, actions2) {
-    const wrapper = make("div", "hy-pension-source-block");
-    const busy = Boolean(viewModel.pensionActivity?.busy);
-    wrapper.append(
-      make("h4", "hy-pension-source-title", "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138 \uC6D4\uBCC4 CSV"),
-      make(
-        "p",
-        "hy-option-description",
-        "\uACF5\uAC1C \uD30C\uC77C \uC5F0\uB3C4\uB97C \uC120\uD0DD\uD55C \uB4A4 \uBAA9\uB85D\uB9CC \uD55C \uBC88 \uC870\uD68C\uD569\uB2C8\uB2E4. \uC120\uD0DD\uD55C \uC6D4\uC740 \uBCC4\uB3C4 \uB2E4\uC6B4\uB85C\uB4DC \uC5C6\uC774 \uC5F0\uAE08 \uD480\uC5D0 \uBC14\uB85C \uAC00\uACF5\xB7\uBCD1\uD569\uD569\uB2C8\uB2E4."
-      )
-    );
-    const gamejobControls = make("div", "hy-pension-portal-controls");
-    const importFilters = make("div", "hy-pension-import-filters");
-    importFilters.append(
-      createPensionImportFilter(
-        viewModel.settings,
-        "pensionImportGamejobOnly",
-        "\uAC8C\uC784\uC7A1\uB9CC \uD3EC\uD568",
-        "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138\uACFC \uB85C\uCEEC CSV\uC5D0\uC11C \uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC758 \uC2A4\uB0C5\uC0F7\uB9CC \uCD94\uAC00\uD569\uB2C8\uB2E4.",
-        actions2
-      ),
-      createPensionImportFilter(
-        viewModel.settings,
-        "pensionImportExistingCompaniesOnly",
-        "\uD604\uC7AC \uC788\uB294 \uD68C\uC0AC\uB9CC \uD3EC\uD568",
-        "\uAC00\uC838\uC624\uAE30 \uC9C1\uC804 \uC5F0\uAE08 \uD480\uC5D0 \uC774\uBBF8 \uC788\uB294 \uD68C\uC0AC\uC758 \uC0C8 \uC6D4 \uC2A4\uB0C5\uC0F7\uB9CC \uCD94\uAC00\uD569\uB2C8\uB2E4.",
-        actions2
-      )
-    );
-    const addGamejob = makeButton(
-      "\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uCD94\uAC00",
-      "hy-secondary",
-      () => actions2.onAddGamejobPensionPool()
-    );
-    addGamejob.disabled = busy;
-    addGamejob.title = "\uB0B4\uC7A5\uB41C \uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uBB36\uC74C\uC744 \uD604\uC7AC \uD480\uC5D0 \uBCD1\uD569\uD569\uB2C8\uB2E4.";
-    const deleteOthers = makeButton(
-      "\uAC8C\uC784\uC7A1 \uC678 \uC5F0\uAE08 \uC0AD\uC81C",
-      "hy-attention",
-      () => {
-        if (confirm(
-          "\uD604\uC7AC \uC5F0\uAE08 \uD480\uC5D0\uC11C \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uAC00 \uC544\uB2CC \uD68C\uC0AC\uC640 \uADF8 \uC2A4\uB0C5\uC0F7\uC744 \uBAA8\uB450 \uC0AD\uC81C\uD560\uAE4C\uC694?\n\n\uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC758 \uAE30\uC874 \uC6D4\uBCC4 \uC2A4\uB0C5\uC0F7\uC740 \uC720\uC9C0\uB418\uBA70, \uB2E4\uB978 \uD68C\uC0AC \uB370\uC774\uD130\uB294 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
-        )) {
-          actions2.onDeleteNonGamejobPensionData();
-        }
-      },
-      "\uD604\uC7AC \uC5F0\uAE08 \uD480\uC5D0\uC11C \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC640 \uADF8 \uC6D4\uBCC4 \uC2A4\uB0C5\uC0F7\uB9CC \uB0A8\uAE30\uAE30"
-    );
-    deleteOthers.disabled = busy;
-    gamejobControls.append(addGamejob, deleteOthers);
-    wrapper.append(
-      make(
-        "p",
-        "hy-option-description",
-        "\uD3EC\uD138\xB7CSV \uCD94\uAC00 \uBC94\uC704\uB97C \uBBF8\uB9AC \uC81C\uD55C\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uB450 \uC635\uC158\uC744 \uD568\uAED8 \uCF1C\uBA74 \uB450 \uC870\uAC74\uC744 \uBAA8\uB450 \uB9CC\uC871\uD558\uB294 \uD68C\uC0AC\uB9CC \uD3EC\uD568\uD569\uB2C8\uB2E4."
-      ),
-      importFilters,
-      gamejobControls
-    );
-    const controls = make("div", "hy-pension-portal-controls");
-    const year = make("select", "hy-input hy-pension-year-select");
-    const currentYear = (/* @__PURE__ */ new Date()).getFullYear();
-    for (let value = currentYear; value >= PENSION_PORTAL_EARLIEST_YEAR; value -= 1) {
-      const option = make("option", "", `${value}\uB144`);
-      option.value = String(value);
-      option.selected = value === viewModel.pensionPortalUi.year;
-      year.append(option);
-    }
-    const load = makeButton(
-      viewModel.pensionPortalUi.loading ? "\uC870\uD68C \uC911\u2026" : "\uC6D4\uBCC4 \uBAA9\uB85D \uC870\uD68C",
-      "hy-secondary",
-      () => actions2.onLoadPensionPortalYear(Number(year.value))
-    );
-    load.disabled = viewModel.pensionPortalUi.loading || busy;
-    controls.append(year, load);
-    wrapper.append(controls);
-    if (viewModel.pensionPortalUi.loadedYear === viewModel.pensionPortalUi.year) {
-      const files = make("div", "hy-pension-portal-files");
-      const requiredLatestMonth = viewModel.pensionPolicy?.requiredLatestMonth ?? null;
-      const latestInstalled = Boolean(
-        viewModel.pensionPolicyStatus?.latestInstalled
-      );
-      const policyCheckDue = Boolean(viewModel.pensionPolicyStatus?.checkDue);
-      for (const file of viewModel.pensionPortalUi.files) {
-        const row = make("div", "hy-pension-portal-file");
-        const month = file.month ?? getPensionPortalFileMonth(file.name) ?? "\uB0A0\uC9DC \uBBF8\uC0C1";
-        const isLatest = month === requiredLatestMonth;
-        if (isLatest) row.classList.add("hy-pension-portal-file-latest");
-        const importButton = makeButton(
-          isLatest ? latestInstalled ? "\uCD5C\uC2E0 \uB2E4\uC2DC \uCD94\uAC00" : "\uCD5C\uC2E0 \uBA3C\uC800 \uCD94\uAC00" : "\uD480\uC5D0 \uBC14\uB85C \uCD94\uAC00",
-          "hy-secondary hy-compact-button",
-          () => actions2.onImportPensionPortalFile(file)
-        );
-        importButton.disabled = busy || policyCheckDue || !latestInstalled && !isLatest;
-        if (!latestInstalled && !isLatest) {
-          importButton.title = `\uCD5C\uC2E0 ${requiredLatestMonth ?? "\uC6D4"} \uD30C\uC77C\uC744 \uBA3C\uC800 \uCD94\uAC00\uD574\uC57C \uD569\uB2C8\uB2E4.`;
-        }
-        row.append(
-          make("span", "hy-pension-portal-month", month),
-          ...isLatest ? [make("span", "hy-pension-latest-badge", "\uCD5C\uC2E0")] : [],
-          importButton
-        );
-        row.title = file.name;
-        files.append(row);
-      }
-      wrapper.append(
-        files.childElementCount ? files : make("p", "hy-empty", "\uC120\uD0DD\uD55C \uC5F0\uB3C4\uC758 \uACF5\uAC1C \uD30C\uC77C\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.")
-      );
-    }
-    return wrapper;
   }
 
   // src/ui/site-sections.js
@@ -6142,201 +5785,9 @@
     content.append(charts);
     return details;
   }
-  function formatRecordTime(value) {
-    const date = new Date(value ?? "");
-    return Number.isNaN(date.getTime()) ? "\u2014" : date.toLocaleString("ko-KR", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  }
-  function renderGamejobOfficialWorkforce(viewModel, actions2) {
-    const block = make("section", "hy-general-block");
-    block.append(
-      make("h3", "hy-general-block-title", "\uAC8C\uC784\uC7A1 \uD398\uC774\uC9C0 \uD45C\uC2DC \uC0AC\uC6D0\uC218")
-    );
-    const current = make("div", "hy-general-current-row");
-    current.append(
-      make(
-        "strong",
-        "hy-general-large-value",
-        Number.isFinite(viewModel.officialEmployeeCount) ? `${formatNumber(viewModel.officialEmployeeCount)}\uBA85` : "\uD655\uC778 \uBD88\uAC00"
-      )
-    );
-    const saveButton = makeButton(
-      "\uC800\uC7A5",
-      "hy-primary",
-      () => actions2.onSaveOfficialWorkforce()
-    );
-    saveButton.disabled = !Number.isFinite(viewModel.officialEmployeeCount);
-    current.append(saveButton);
-    block.append(current);
-    const records = viewModel.companyData?.gamejobOfficialWorkforceHistory ?? [];
-    const history = make("details", "hy-general-history");
-    const summary = make("summary", "hy-general-history-summary");
-    summary.append(
-      make("span", "", `\uACFC\uAC70 \uAE30\uB85D ${formatNumber(records.length)}\uAC1C`),
-      make("span", "hy-general-history-chevron")
-    );
-    history.append(summary);
-    const list = make("div", "hy-general-history-list");
-    if (records.length === 0) {
-      list.append(
-        make("p", "hy-empty hy-compact", "\uC800\uC7A5\uB41C \uC778\uB825 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.")
-      );
-    } else {
-      for (const record of records) {
-        const row = make("div", "hy-general-history-row");
-        const copy = make("span", "hy-general-history-copy");
-        copy.append(
-          make("strong", "", `${formatNumber(record.employeeCount)}\uBA85`),
-          make("small", "", formatRecordTime(record.savedAt))
-        );
-        row.append(
-          copy,
-          makeButton(
-            "\uC0AD\uC81C",
-            "hy-attention hy-compact-button",
-            () => {
-              if (confirm("\uC774 \uAC8C\uC784\uC7A1 \uD398\uC774\uC9C0 \uD45C\uC2DC \uC0AC\uC6D0\uC218 \uAE30\uB85D\uC744 \uC0AD\uC81C\uD560\uAE4C\uC694?")) {
-                actions2.onDeleteOfficialWorkforceRecord(record.id);
-              }
-            },
-            "\uC774 \uC778\uB825 \uAE30\uB85D\uB9CC \uC0AD\uC81C"
-          )
-        );
-        list.append(row);
-      }
-    }
-    history.append(list);
-    block.append(history);
-    return block;
-  }
-  function renderPensionOfficialWorkforce(viewModel) {
-    const result = findBoundPensionResult(viewModel);
-    const block = make("section", "hy-general-block");
-    const heading = make(
-      "h3",
-      "hy-general-block-title",
-      "\uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uAC00\uC785\uC790 \uD604\uD669"
-    );
-    heading.title = "\uAD6D\uBBFC\uC5F0\uAE08 \uC7A5\uAE30\uAC00\uC785\uC790 \uC218\uC774\uBA70 \uC2E4\uC81C \uC9C1\uC6D0 \uC218\uC640 \uB2E4\uB97C \uC218 \uC788\uC2B5\uB2C8\uB2E4.";
-    block.append(heading);
-    if (!result?.latest) {
-      block.append(
-        make("p", "hy-empty hy-compact", "\uBC14\uC778\uB4DC\uB41C \uAD6D\uBBFC\uC5F0\uAE08 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.")
-      );
-      return block;
-    }
-    const facts = make("div", "hy-general-pension-values");
-    for (const [label, value] of [
-      ["\uAC00\uC785\uC790 \uC218", result.latest.subscribers],
-      [PENSION_ACQUISITION_LABEL, result.latest.joined],
-      [PENSION_LOSS_LABEL, result.latest.left]
-    ]) {
-      appendKeyValue(
-        facts,
-        label,
-        Number.isFinite(value) ? `${formatNumber(value)}\uBA85` : "\u2014"
-      );
-    }
-    block.append(
-      make("p", "hy-general-pension-month", `${result.latest.month} \uAE30\uC900`),
-      facts,
-      make(
-        "p",
-        "hy-general-pension-warning",
-        `\uC9C1\uC6D0 \uC218\uAC00 \uC544\uB2D9\uB2C8\uB2E4. ${PENSION_ACQUISITION_WARNING} ${PENSION_LOSS_WARNING}`
-      )
-    );
-    return block;
-  }
-  function renderGamejobPostingDetailRecords(viewModel, actions2) {
-    const block = make("section", "hy-general-block");
-    block.append(make("h3", "hy-general-block-title", "\uC0C1\uC138 \uC218\uC815 \uC2DC\uAC04\uACFC \uAE30\uB85D"));
-    const posting = viewModel.posting;
-    if (!posting) {
-      block.append(
-        make(
-          "p",
-          "hy-empty hy-compact",
-          "\uAC8C\uC784\uC7A1 \uC0C1\uC138 \uACF5\uACE0 \uD398\uC774\uC9C0\uC5D0\uC11C \uC800\uC7A5\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
-        )
-      );
-      return block;
-    }
-    const facts = make("div", "hy-posting-detail-facts");
-    appendKeyValue(
-      facts,
-      "\uACF5\uACE0 \uB4F1\uB85D\uC2DC\uAC04",
-      posting.registeredText ?? posting.registeredAt ?? posting.openedAt ?? "\u2014"
-    );
-    appendKeyValue(
-      facts,
-      "\uB9C8\uC9C0\uB9C9 \uC218\uC815 \uC2DC\uAC04",
-      posting.lastModifiedText ?? posting.lastModifiedAt ?? "\u2014"
-    );
-    const saveButton = makeButton(
-      "\uC0C1\uC138 \uAE30\uB85D \uC800\uC7A5",
-      "hy-primary hy-save-action",
-      () => actions2.onSaveGamejobPostingDetail()
-    );
-    block.append(facts, saveButton);
-    const records = viewModel.companyData?.gamejobPostingDetails?.[posting.id]?.records ?? [];
-    const history = make("details", "hy-general-history");
-    const summary = make("summary", "hy-general-history-summary");
-    summary.append(
-      make("span", "", `\uC800\uC7A5 \uAE30\uB85D ${formatNumber(records.length)}\uAC1C`),
-      make("span", "hy-general-history-chevron")
-    );
-    history.append(summary);
-    const list = make("div", "hy-general-history-list");
-    if (records.length === 0) {
-      list.append(
-        make("p", "hy-empty hy-compact", "\uC800\uC7A5\uB41C \uC0C1\uC138 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.")
-      );
-    } else {
-      for (const record of records) {
-        const row = make("div", "hy-general-posting-record");
-        row.append(
-          make(
-            "strong",
-            "",
-            record.lastModifiedText ?? record.lastModifiedAt ?? "\uC218\uC815\uC2DC\uAC04 \uD655\uC778 \uBD88\uAC00"
-          ),
-          make(
-            "span",
-            "",
-            `\uB4F1\uB85D ${record.registeredText ?? record.registeredAt ?? "\u2014"}`
-          ),
-          make("small", "", `\uC800\uC7A5 ${formatRecordTime(record.savedAt)}`)
-        );
-        list.append(row);
-      }
-    }
-    history.append(list);
-    block.append(history);
-    return block;
-  }
-  function renderGamejobGeneral(viewModel, actions2) {
-    const { details, content } = createSection(
-      "\uC77C\uBC18",
-      "postingDetails",
-      viewModel.settings,
-      actions2
-    );
-    content.append(
-      renderPensionOfficialWorkforce(viewModel),
-      renderGamejobOfficialWorkforce(viewModel, actions2),
-      renderGamejobPostingDetailRecords(viewModel, actions2)
-    );
-    return details;
-  }
   function renderPastPostings(viewModel, actions2) {
     const { details, content, headerActions, heading } = createSection(
-      viewModel.site?.id === "gamejob" ? "\uACF5\uACE0 \uC0C1\uC138" : "\uACF5\uACE0 \uD638\uCD9C",
+      viewModel.site?.id === "gamejob" ? "\uACF5\uACE0" : "\uACF5\uACE0 \uD638\uCD9C",
       "pastPostings",
       viewModel.settings,
       actions2
@@ -6386,6 +5837,619 @@
       actions2
     );
     content.append(createGamejobEnhancedSearchContent(viewModel, actions2));
+    return details;
+  }
+
+  // src/ui/pension-history-chart.js
+  var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  var PENSION_HISTORY_SERIES = Object.freeze([
+    {
+      key: "subscribers",
+      label: "\uAC00\uC785\uC790 \uC218",
+      color: "#6289e8",
+      chartValue: (value) => Number.isFinite(value) ? value : null
+    },
+    {
+      key: "joined",
+      label: PENSION_ACQUISITION_LABEL,
+      color: "#5bbc8b",
+      chartValue: (value) => Number.isFinite(value) ? value : null
+    },
+    {
+      key: "left",
+      label: PENSION_LOSS_LABEL,
+      color: "#e98589",
+      chartValue: (value) => Number.isFinite(value) ? -Math.abs(value) : null
+    }
+  ]);
+  function svgElement(name, attributes = {}) {
+    const element = document.createElementNS(SVG_NAMESPACE, name);
+    for (const [key, value] of Object.entries(attributes)) {
+      element.setAttribute(key, String(value));
+    }
+    return element;
+  }
+  function resolveChartLocation(result) {
+    const locations = result?.locations ?? [];
+    return locations.find(
+      (location2) => location2.address === (result?.matchedAddress ?? null)
+    ) ?? locations[0] ?? null;
+  }
+  function createPensionHistoryChartModel(result, selectedMonths = null) {
+    const location2 = resolveChartLocation(result);
+    const availableMonths = Object.keys(location2?.months ?? {}).sort();
+    const selected = selectedMonths instanceof Set ? selectedMonths : new Set(selectedMonths ?? availableMonths);
+    const months = availableMonths.filter((month) => selected.has(month));
+    const rows = months.map((month) => {
+      const snapshot = location2.months[month];
+      return {
+        month,
+        snapshot,
+        values: Object.fromEntries(
+          PENSION_HISTORY_SERIES.map((series) => [
+            series.key,
+            series.chartValue(snapshot?.[series.key])
+          ])
+        )
+      };
+    });
+    const values = [
+      0,
+      ...rows.flatMap((row) => Object.values(row.values))
+    ].filter(Number.isFinite);
+    const rawMinimum = Math.min(...values);
+    const rawMaximum = Math.max(...values);
+    const span = Math.max(1, rawMaximum - rawMinimum);
+    const padding = Math.max(1, Math.ceil(span * 0.1));
+    return {
+      location: location2,
+      availableMonths,
+      rows,
+      minimum: rawMinimum - padding,
+      maximum: rawMaximum + padding
+    };
+  }
+  function renderLatestMetrics(model) {
+    const metrics = make("div", "hy-pension-chart-metrics");
+    const latest = model.rows.at(-1);
+    for (const series of PENSION_HISTORY_SERIES) {
+      const card = make("div", "hy-pension-chart-metric");
+      card.style.setProperty("--hy-series-color", series.color);
+      card.append(
+        make("span", "", series.label),
+        make(
+          "strong",
+          "",
+          latest ? `${formatNumber(latest.snapshot?.[series.key])}\uBA85` : "\u2014"
+        )
+      );
+      metrics.append(card);
+    }
+    return metrics;
+  }
+  function renderSvgChart(model) {
+    if (model.rows.length === 0) {
+      return make("p", "hy-empty", "\uD45C\uC2DC\uD560 \uAE30\uAC04\uC744 \uC120\uD0DD\uD558\uC138\uC694.");
+    }
+    const width = 640;
+    const height = 280;
+    const plot = { left: 58, right: 18, top: 18, bottom: 42 };
+    const plotWidth = width - plot.left - plot.right;
+    const plotHeight = height - plot.top - plot.bottom;
+    const range = Math.max(1, model.maximum - model.minimum);
+    const x = (index) => model.rows.length === 1 ? plot.left + plotWidth / 2 : plot.left + plotWidth * index / (model.rows.length - 1);
+    const y = (value) => plot.top + (model.maximum - value) / range * plotHeight;
+    const svg = svgElement("svg", {
+      class: "hy-pension-history-svg",
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-label": `${model.rows[0].month}\uBD80\uD130 ${model.rows.at(-1).month}\uAE4C\uC9C0 \uAD6D\uBBFC\uC5F0\uAE08 \uAC00\uC785\uC790 \uD604\uD669`
+    });
+    for (let index = 0; index <= 4; index += 1) {
+      const value = model.maximum - range * index / 4;
+      const lineY = y(value);
+      svg.append(
+        svgElement("line", {
+          class: "hy-pension-chart-grid",
+          x1: plot.left,
+          x2: width - plot.right,
+          y1: lineY,
+          y2: lineY
+        })
+      );
+      const label = svgElement("text", {
+        class: "hy-pension-chart-axis-label",
+        x: plot.left - 8,
+        y: lineY + 4,
+        "text-anchor": "end"
+      });
+      label.textContent = String(Math.round(value));
+      svg.append(label);
+    }
+    if (model.minimum < 0 && model.maximum > 0) {
+      svg.append(
+        svgElement("line", {
+          class: "hy-pension-chart-zero",
+          x1: plot.left,
+          x2: width - plot.right,
+          y1: y(0),
+          y2: y(0)
+        })
+      );
+    }
+    const labelStep = Math.max(1, Math.ceil(model.rows.length / 7));
+    model.rows.forEach((row, index) => {
+      if (index % labelStep !== 0 && index !== model.rows.length - 1) return;
+      const label = svgElement("text", {
+        class: "hy-pension-chart-month-label",
+        x: x(index),
+        y: height - 15,
+        "text-anchor": "middle"
+      });
+      label.textContent = row.month;
+      svg.append(label);
+    });
+    for (const series of PENSION_HISTORY_SERIES) {
+      const segments = [];
+      let segment = [];
+      model.rows.forEach((row, index) => {
+        const value = row.values[series.key];
+        if (Number.isFinite(value)) {
+          segment.push(`${x(index)},${y(value)}`);
+        } else if (segment.length > 0) {
+          segments.push(segment);
+          segment = [];
+        }
+      });
+      if (segment.length > 0) segments.push(segment);
+      for (const points of segments) {
+        svg.append(
+          svgElement("polyline", {
+            class: "hy-pension-chart-line",
+            points: points.join(" "),
+            fill: "none",
+            stroke: series.color
+          })
+        );
+      }
+      model.rows.forEach((row, index) => {
+        const value = row.values[series.key];
+        if (!Number.isFinite(value)) return;
+        const circle = svgElement("circle", {
+          class: "hy-pension-chart-point",
+          cx: x(index),
+          cy: y(value),
+          r: 5,
+          fill: series.color,
+          tabindex: 0
+        });
+        const original = row.snapshot?.[series.key];
+        const title = svgElement("title");
+        title.textContent = `${row.month} \xB7 ${series.label} ${formatNumber(original)}\uBA85${series.key === "left" ? ` \xB7 \uADF8\uB798\uD504 ${formatNumber(value)}` : ""}`;
+        circle.append(title);
+        svg.append(circle);
+      });
+    }
+    return svg;
+  }
+  function renderPensionHistoryGraph(result, { compact = false, bindingLabel = null, onUnbind = null } = {}) {
+    const initialModel = createPensionHistoryChartModel(result);
+    if (!initialModel.location || initialModel.availableMonths.length === 0) {
+      return null;
+    }
+    const selectedMonths = new Set(initialModel.availableMonths);
+    const wrapper = make(
+      "section",
+      `hy-pension-history-chart${compact ? " hy-pension-history-chart-compact" : ""}`
+    );
+    const header = make("div", "hy-pension-chart-header");
+    header.append(make("strong", "", result.name));
+    if (bindingLabel) {
+      header.append(make("span", "hy-pension-chart-binding", bindingLabel));
+    }
+    if (onUnbind) {
+      const unbind = make("button", "hy-pension-chart-unbind", "\uBC14\uC778\uB4DC \uD574\uC81C");
+      unbind.type = "button";
+      unbind.addEventListener("click", onUnbind);
+      header.append(unbind);
+    }
+    const periodFilters = make("div", "hy-pension-chart-periods");
+    const chartBody = make("div", "hy-pension-chart-body");
+    const draw = () => {
+      const model = createPensionHistoryChartModel(result, selectedMonths);
+      chartBody.replaceChildren(renderLatestMetrics(model), renderSvgChart(model));
+    };
+    for (const month of [...initialModel.availableMonths].reverse()) {
+      const label = make("label", "hy-pension-chart-period");
+      const input = make("input");
+      input.type = "checkbox";
+      input.checked = true;
+      input.addEventListener("change", () => {
+        if (input.checked) selectedMonths.add(month);
+        else selectedMonths.delete(month);
+        draw();
+      });
+      label.append(input, make("span", "", month));
+      periodFilters.append(label);
+    }
+    wrapper.append(
+      header,
+      periodFilters,
+      chartBody,
+      make(
+        "p",
+        "hy-pension-chart-warning",
+        `${PENSION_ACQUISITION_WARNING} ${PENSION_LOSS_WARNING}`
+      )
+    );
+    draw();
+    return wrapper;
+  }
+
+  // src/ui/pension-ui-shared.js
+  function renderPensionActivity(activity) {
+    if (!activity?.busy) return null;
+    const status = make("div", "hy-pension-activity");
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.append(
+      make("span", "hy-pension-spinner"),
+      make("span", "", activity.label ?? "\uC5F0\uAE08 \uB370\uC774\uD130 \uCC98\uB9AC \uC911")
+    );
+    return status;
+  }
+
+  // src/ui/pension-comparison-section.js
+  function findBoundPensionResult(viewModel) {
+    const results = viewModel.pensionPoolUi?.results ?? [];
+    const manualMatch = viewModel.pensionBinding;
+    if (manualMatch) {
+      const matched = results.find(
+        (result) => isSamePensionMatch(manualMatch, {
+          name: result.name,
+          address: result.matchedAddress
+        })
+      );
+      if (matched) return matched;
+    }
+    return results.find((result) => result.manualBind || result.directoryBind) ?? null;
+  }
+  function renderPensionPoolSearch(container, viewModel, actions2) {
+    const summary = viewModel.pensionPoolSummary;
+    const ui = viewModel.pensionPoolUi;
+    const activity = renderPensionActivity(viewModel.pensionActivity);
+    if (activity) container.append(activity);
+    if (!summary?.companyCount) {
+      container.append(
+        make("p", "hy-empty", "\uBA3C\uC800 \uAD6D\uBBFC\uC5F0\uAE08 CSV\uB97C \uC5F0\uAE08 \uD480\uC5D0 \uCD94\uAC00\uD558\uC138\uC694."),
+        makeButton(
+          "\uC5F0\uAE08 CSV \uCD94\uAC00",
+          "hy-primary",
+          () => actions2.onPickPensionCsvFiles()
+        )
+      );
+      return;
+    }
+    const boundResult = findBoundPensionResult(viewModel);
+    const bindingLabel = boundResult?.manualBind ? "\uC218\uB3D9 \uBC14\uC778\uB4DC" : boundResult?.directoryBind ? "\uAE30\uBCF8 \uBC14\uC778\uB529" : null;
+    const graph = boundResult ? renderPensionHistoryGraph(boundResult, {
+      bindingLabel,
+      onUnbind: bindingLabel ? () => actions2.onUnbindPensionCompany() : null
+    }) : null;
+    container.append(
+      graph ?? make(
+        "div",
+        "hy-pension-history-chart hy-pension-history-chart-empty",
+        "\uBC14\uC778\uB4DC\uB41C \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."
+      )
+    );
+    const searchRow = make("div", "hy-pension-search-row");
+    const input = make("input", "hy-input");
+    input.type = "search";
+    input.placeholder = "\uD68C\uC0AC\uBA85 \uAC80\uC0C9";
+    input.value = ui?.query ?? "";
+    const search = () => actions2.onSearchPensionPool(input.value);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") search();
+    });
+    searchRow.append(
+      input,
+      makeButton(
+        "\uAC80\uC0C9",
+        "hy-primary",
+        search,
+        "\uC5F0\uAE08 \uD480\uC5D0\uC11C \uD68C\uC0AC\uBA85\uB9CC \uAC80\uC0C9\uD574 \uC0C1\uC704 4\uAC1C\uB97C \uD45C\uC2DC\uD569\uB2C8\uB2E4."
+      )
+    );
+    container.append(searchRow);
+    if (!ui?.searched) {
+      container.append(
+        make(
+          "p",
+          "hy-empty hy-pension-search-help",
+          "\uD68C\uC0AC\uBA85\uC744 \uC785\uB825\uD558\uBA74 \uC0C1\uC704 4\uAC1C \uC5F0\uAE08 \uC0AC\uC5C5\uC7A5\uC744 \uD45C\uC2DC\uD569\uB2C8\uB2E4."
+        )
+      );
+      return;
+    }
+    if (ui.results.length === 0) {
+      container.append(make("p", "hy-empty", "\uC77C\uCE58\uD558\uB294 \uC5F0\uAE08 \uD68C\uC0AC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."));
+      return;
+    }
+    const resultList = make("div", "hy-pension-name-results");
+    for (const result of ui.results.slice(0, 4)) {
+      const manuallyBound = Boolean(
+        result.manualBind || isSamePensionMatch(viewModel.pensionBinding, {
+          name: result.name,
+          address: result.matchedAddress
+        })
+      );
+      const directoryBound = Boolean(result.directoryBind && !manuallyBound);
+      const bindRestriction = getPensionBindingRestriction(
+        result,
+        viewModel.pensionBindingEmployeeCount,
+        viewModel.pensionBindingSourceName
+      );
+      const companyButton = makeButton(
+        result.name,
+        `hy-pension-name-result${manuallyBound || directoryBound ? " hy-pension-name-result-bound" : ""}`,
+        () => actions2.onBindPensionCompany(result),
+        manuallyBound || directoryBound ? `${result.name}\uC5D0 \uD604\uC7AC \uBC14\uC778\uB529\uB428` : bindRestriction || `${result.name}\uC5D0 \uBC14\uC778\uB4DC`
+      );
+      companyButton.disabled = manuallyBound || directoryBound || Boolean(bindRestriction);
+      if (manuallyBound || directoryBound) {
+        companyButton.setAttribute("aria-current", "true");
+      }
+      resultList.append(companyButton);
+    }
+    container.append(resultList);
+  }
+  function renderWorkforce(viewModel, actions2) {
+    const pensionSummary = viewModel.pensionPoolSummary;
+    const { details, content, heading } = createSection(
+      "\uC77C\uBC18",
+      "workforce",
+      viewModel.settings,
+      actions2,
+      {
+        helpContent: [
+          "\uD68C\uC0AC\uBA85\uC73C\uB85C \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uD6C4\uBCF4\uB97C \uAC80\uC0C9\uD569\uB2C8\uB2E4.",
+          `\uD68C\uC0AC ${formatNumber(pensionSummary?.companyCount)}\uAC1C`,
+          `\uC6D4 \uAE30\uB85D ${formatNumber(pensionSummary?.snapshotCount)}\uAC1C`
+        ]
+      }
+    );
+    const companyCount = Number(pensionSummary?.companyCount);
+    if (Number.isFinite(companyCount) && companyCount > 0 && companyCount <= 2e3) {
+      heading.append(
+        createHelpMark(
+          [
+            "[\uAC8C\uC784\uC7A1 \uAE30\uBCF8 \uC138\uD305 \uC0AC\uC6A9\uC911]",
+            "\uC5F0\uAE08 \uB370\uC774\uD130\uC5D0\uC11C \uCD5C\uC2E0 \uAE30\uB85D\uC744 \uB2E4\uC6B4\uB85C\uB4DC \uD558\uC138\uC694"
+          ],
+          "hy-pension-pool-hint",
+          "\u{1F4A1}"
+        )
+      );
+    }
+    renderPensionPoolSearch(content, viewModel, actions2);
+    return details;
+  }
+
+  // src/ui/pension-data-section.js
+  function createPensionImportFilter(settings, key, title, description, actions2) {
+    const label = make("label", "hy-option-row");
+    label.dataset.tooltip = description;
+    const input = make("input", "hy-option-switch");
+    input.type = "checkbox";
+    input.checked = Boolean(settings?.[key]);
+    input.setAttribute("aria-label", `${title}: ${description}`);
+    input.addEventListener(
+      "change",
+      () => actions2.onSettingsChange({ [key]: input.checked })
+    );
+    label.append(make("strong", "", title), input);
+    return label;
+  }
+  function getPensionVersionStatus(viewModel) {
+    const policy = viewModel.pensionPolicy ?? {};
+    const status = viewModel.pensionPolicyStatus ?? {};
+    if (!policy.requiredLatestMonth || status.checkDue) {
+      return { label: "\uD655\uC778 \uBD88\uAC00", className: "hy-version-status-unknown" };
+    }
+    if (!status.latestInstalled) {
+      return { label: "\uC124\uCE58 \uD544\uC694", className: "hy-version-status-required" };
+    }
+    return { label: "\uCD5C\uC2E0 \uBC84\uC804", className: "hy-version-status-current" };
+  }
+  function renderPensionMonthManager(viewModel, actions2) {
+    const wrapper = make("div", "hy-pension-source-block");
+    wrapper.append(
+      make("h4", "hy-pension-source-title", "\uC800\uC7A5\uB41C \uC6D4 \uC0AD\uC81C"),
+      make(
+        "p",
+        "hy-option-description",
+        "\uC120\uD0DD\uD55C \uC6D4\uC744 \uBAA8\uB4E0 \uD68C\uC0AC\uC640 \uC8FC\uC18C\uC5D0\uC11C \uC0AD\uC81C\uD569\uB2C8\uB2E4."
+      )
+    );
+    const months = make("div", "hy-pension-stored-months");
+    for (const month of viewModel.pensionPoolSummary?.months ?? []) {
+      const row = make("div", "hy-pension-stored-month");
+      row.append(
+        make("strong", "", month),
+        makeButton(
+          "\uC0AD\uC81C",
+          "hy-attention hy-compact-button",
+          () => {
+            if (confirm(`${month} \uC5F0\uAE08 \uAE30\uB85D\uC744 \uBAA8\uB4E0 \uD68C\uC0AC\uC5D0\uC11C \uC0AD\uC81C\uD560\uAE4C\uC694?`)) {
+              actions2.onDeletePensionPoolMonth(month);
+            }
+          },
+          `${month} \uC804\uCCB4 \uC0AD\uC81C`
+        )
+      );
+      months.append(row);
+    }
+    wrapper.append(
+      months.childElementCount ? months : make("p", "hy-empty", "\uC0AD\uC81C\uD560 \uC6D4 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.")
+    );
+    return wrapper;
+  }
+  function renderPensionPortalControls(viewModel, actions2) {
+    const wrapper = make("div", "hy-pension-source-block");
+    const busy = Boolean(viewModel.pensionActivity?.busy);
+    wrapper.append(
+      make("h4", "hy-pension-source-title", "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138 \uC6D4\uBCC4 CSV"),
+      make(
+        "p",
+        "hy-option-description",
+        "\uACF5\uAC1C \uD30C\uC77C \uC5F0\uB3C4\uB97C \uC120\uD0DD\uD55C \uB4A4 \uBAA9\uB85D\uB9CC \uD55C \uBC88 \uC870\uD68C\uD569\uB2C8\uB2E4. \uC120\uD0DD\uD55C \uC6D4\uC740 \uBCC4\uB3C4 \uB2E4\uC6B4\uB85C\uB4DC \uC5C6\uC774 \uC5F0\uAE08 \uD480\uC5D0 \uBC14\uB85C \uAC00\uACF5\xB7\uBCD1\uD569\uD569\uB2C8\uB2E4."
+      )
+    );
+    const gamejobControls = make("div", "hy-pension-portal-controls");
+    const importFilters = make("div", "hy-pension-import-filters");
+    importFilters.append(
+      createPensionImportFilter(
+        viewModel.settings,
+        "pensionImportGamejobOnly",
+        "\uAC8C\uC784\uC7A1\uB9CC \uD3EC\uD568",
+        "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138\uACFC \uB85C\uCEEC CSV\uC5D0\uC11C \uB0B4\uC7A5 \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC758 \uC2A4\uB0C5\uC0F7\uB9CC \uCD94\uAC00\uD569\uB2C8\uB2E4.",
+        actions2
+      ),
+      createPensionImportFilter(
+        viewModel.settings,
+        "pensionImportExistingCompaniesOnly",
+        "\uD604\uC7AC \uC788\uB294 \uD68C\uC0AC\uB9CC \uD3EC\uD568",
+        "\uAC00\uC838\uC624\uAE30 \uC9C1\uC804 \uC5F0\uAE08 \uD480\uC5D0 \uC774\uBBF8 \uC788\uB294 \uD68C\uC0AC\uC758 \uC0C8 \uC6D4 \uC2A4\uB0C5\uC0F7\uB9CC \uCD94\uAC00\uD569\uB2C8\uB2E4.",
+        actions2
+      )
+    );
+    const addGamejob = makeButton(
+      "\uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uCD94\uAC00",
+      "hy-secondary",
+      () => actions2.onAddGamejobPensionPool()
+    );
+    addGamejob.disabled = busy;
+    addGamejob.title = "\uB0B4\uC7A5\uB41C \uAC8C\uC784\uC7A1 \uAD6D\uBBFC\uC5F0\uAE08 \uC0AC\uC5C5\uC7A5 \uBB36\uC74C\uC744 \uD604\uC7AC \uD480\uC5D0 \uBCD1\uD569\uD569\uB2C8\uB2E4.";
+    const deleteOthers = makeButton(
+      "\uAC8C\uC784\uC7A1 \uC678 \uC5F0\uAE08 \uC0AD\uC81C",
+      "hy-attention",
+      () => {
+        if (confirm(
+          "\uD604\uC7AC \uC5F0\uAE08 \uD480\uC5D0\uC11C \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uAC00 \uC544\uB2CC \uD68C\uC0AC\uC640 \uADF8 \uC2A4\uB0C5\uC0F7\uC744 \uBAA8\uB450 \uC0AD\uC81C\uD560\uAE4C\uC694?\n\n\uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC758 \uAE30\uC874 \uC6D4\uBCC4 \uC2A4\uB0C5\uC0F7\uC740 \uC720\uC9C0\uB418\uBA70, \uB2E4\uB978 \uD68C\uC0AC \uB370\uC774\uD130\uB294 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+        )) {
+          actions2.onDeleteNonGamejobPensionData();
+        }
+      },
+      "\uD604\uC7AC \uC5F0\uAE08 \uD480\uC5D0\uC11C \uAC8C\uC784\uC7A1 \uD68C\uC0AC\uC640 \uADF8 \uC6D4\uBCC4 \uC2A4\uB0C5\uC0F7\uB9CC \uB0A8\uAE30\uAE30"
+    );
+    deleteOthers.disabled = busy;
+    gamejobControls.append(addGamejob, deleteOthers);
+    wrapper.append(
+      make(
+        "p",
+        "hy-option-description",
+        "\uD3EC\uD138\xB7CSV \uCD94\uAC00 \uBC94\uC704\uB97C \uBBF8\uB9AC \uC81C\uD55C\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uB450 \uC635\uC158\uC744 \uD568\uAED8 \uCF1C\uBA74 \uB450 \uC870\uAC74\uC744 \uBAA8\uB450 \uB9CC\uC871\uD558\uB294 \uD68C\uC0AC\uB9CC \uD3EC\uD568\uD569\uB2C8\uB2E4."
+      ),
+      importFilters,
+      gamejobControls
+    );
+    const controls = make("div", "hy-pension-portal-controls");
+    const year = make("select", "hy-input hy-pension-year-select");
+    const currentYear = (/* @__PURE__ */ new Date()).getFullYear();
+    for (let value = currentYear; value >= PENSION_PORTAL_EARLIEST_YEAR; value -= 1) {
+      const option = make("option", "", `${value}\uB144`);
+      option.value = String(value);
+      option.selected = value === viewModel.pensionPortalUi.year;
+      year.append(option);
+    }
+    const load = makeButton(
+      viewModel.pensionPortalUi.loading ? "\uC870\uD68C \uC911\u2026" : "\uC6D4\uBCC4 \uBAA9\uB85D \uC870\uD68C",
+      "hy-secondary",
+      () => actions2.onLoadPensionPortalYear(Number(year.value))
+    );
+    load.disabled = viewModel.pensionPortalUi.loading || busy;
+    controls.append(year, load);
+    wrapper.append(controls);
+    if (viewModel.pensionPortalUi.loadedYear === viewModel.pensionPortalUi.year) {
+      const files = make("div", "hy-pension-portal-files");
+      const requiredLatestMonth = viewModel.pensionPolicy?.requiredLatestMonth ?? null;
+      const latestInstalled = Boolean(
+        viewModel.pensionPolicyStatus?.latestInstalled
+      );
+      const policyCheckDue = Boolean(viewModel.pensionPolicyStatus?.checkDue);
+      for (const file of viewModel.pensionPortalUi.files) {
+        const row = make("div", "hy-pension-portal-file");
+        const month = file.month ?? getPensionPortalFileMonth(file.name) ?? "\uB0A0\uC9DC \uBBF8\uC0C1";
+        const isLatest = month === requiredLatestMonth;
+        if (isLatest) row.classList.add("hy-pension-portal-file-latest");
+        const importButton = makeButton(
+          isLatest ? latestInstalled ? "\uCD5C\uC2E0 \uB2E4\uC2DC \uCD94\uAC00" : "\uCD5C\uC2E0 \uBA3C\uC800 \uCD94\uAC00" : "\uD480\uC5D0 \uBC14\uB85C \uCD94\uAC00",
+          "hy-secondary hy-compact-button",
+          () => actions2.onImportPensionPortalFile(file)
+        );
+        importButton.disabled = busy || policyCheckDue || !latestInstalled && !isLatest;
+        if (!latestInstalled && !isLatest) {
+          importButton.title = `\uCD5C\uC2E0 ${requiredLatestMonth ?? "\uC6D4"} \uD30C\uC77C\uC744 \uBA3C\uC800 \uCD94\uAC00\uD574\uC57C \uD569\uB2C8\uB2E4.`;
+        }
+        row.append(
+          make("span", "hy-pension-portal-month", month),
+          ...isLatest ? [make("span", "hy-pension-latest-badge", "\uCD5C\uC2E0")] : [],
+          importButton
+        );
+        row.title = file.name;
+        files.append(row);
+      }
+      wrapper.append(
+        files.childElementCount ? files : make("p", "hy-empty", "\uC120\uD0DD\uD55C \uC5F0\uB3C4\uC758 \uACF5\uAC1C \uD30C\uC77C\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.")
+      );
+    }
+    return wrapper;
+  }
+  function renderPensionData(viewModel, actions2) {
+    const { details, content, headerActions } = createSection(
+      "\uC5F0\uAE08 \uB370\uC774\uD130",
+      "pensionData",
+      viewModel.settings,
+      actions2
+    );
+    const versionStatus = getPensionVersionStatus(viewModel);
+    headerActions.append(
+      make(
+        "span",
+        `hy-version-status ${versionStatus.className}`,
+        versionStatus.label
+      )
+    );
+    const pension = viewModel.pensionPoolSummary;
+    const activity = renderPensionActivity(viewModel.pensionActivity);
+    if (activity) content.append(activity);
+    const monthRange = pension?.latestMonth ? pension.latestMonth === pension.oldestMonth ? pension.latestMonth : `${pension.latestMonth} ~ ${pension.oldestMonth}` : "\uC6D4 \uB370\uC774\uD130 \uC5C6\uC74C";
+    content.append(
+      make(
+        "p",
+        "hy-version hy-pension-summary",
+        `\uD68C\uC0AC ${formatNumber(pension?.companyCount)}\uAC1C \xB7 \uC8FC\uC18C ${formatNumber(pension?.locationCount)}\uAC1C \xB7 \uC6D4 \uC2A4\uB0C5\uC0F7 ${formatNumber(pension?.snapshotCount)}\uAC1C \xB7 ${monthRange}`
+      )
+    );
+    const controls = make("div", "hy-data-controls");
+    controls.append(
+      makeButton(
+        "\uACF5\uACF5\uB370\uC774\uD130\uD3EC\uD138 \uC5F4\uAE30 \u2197",
+        "hy-secondary",
+        () => actions2.onOpenPensionDataPortal()
+      ),
+      makeButton(
+        "\uC5F0\uAE08 CSV \uCD94\uAC00",
+        "hy-secondary",
+        () => actions2.onPickPensionCsvFiles()
+      )
+    );
+    content.append(
+      controls,
+      renderPensionMonthManager(viewModel, actions2),
+      renderPensionPortalControls(viewModel, actions2)
+    );
     return details;
   }
 
@@ -6439,41 +6503,18 @@
     card.append(heading);
     return { card, heading };
   }
-  function renderPensionCard(viewModel) {
+  function renderPensionCard(viewModel, actions2) {
     const result = findBoundPensionResult(viewModel);
-    if (!result?.latest) return null;
-    const { card, heading } = createSimpleCard(
-      "\uAD6D\uBBFC\uC5F0\uAE08",
-      "hy-gamejob-simple-pension"
-    );
-    heading.append(
-      make("span", "hy-gamejob-simple-month", `${result.latest.month} \uAE30\uC900`)
-    );
-    const metrics = make("div", "hy-gamejob-simple-metrics");
-    for (const [label, value] of [
-      ["\uAC00\uC785\uC790 \uC218", result.latest.subscribers],
-      [PENSION_ACQUISITION_LABEL, result.latest.joined],
-      [PENSION_LOSS_LABEL, result.latest.left]
-    ]) {
-      const metric = make("div", "hy-gamejob-simple-metric");
-      metric.append(
-        make("span", "", label),
-        make(
-          "strong",
-          "",
-          Number.isFinite(value) ? `${formatNumber(value)}\uBA85` : "\u2014"
-        )
-      );
-      metrics.append(metric);
-    }
-    card.append(
-      metrics,
-      make(
-        "p",
-        "hy-gamejob-simple-pension-warning",
-        `${PENSION_ACQUISITION_WARNING} ${PENSION_LOSS_WARNING}`
-      )
-    );
+    if (!result) return null;
+    const { card } = createSimpleCard("\uC77C\uBC18", "hy-gamejob-simple-pension");
+    const bindingLabel = result.manualBind ? "\uC218\uB3D9 \uBC14\uC778\uB4DC" : result.directoryBind ? "\uAE30\uBCF8 \uBC14\uC778\uB529" : null;
+    const graph = renderPensionHistoryGraph(result, {
+      compact: true,
+      bindingLabel,
+      onUnbind: bindingLabel ? () => actions2.onUnbindPensionCompany() : null
+    });
+    if (!graph) return null;
+    card.append(graph);
     return card;
   }
   function formatUpdatedAt(value) {
@@ -6600,7 +6641,7 @@
       return dashboard;
     }
     dashboard.append(renderSimpleAutomationControls(viewModel, actions2));
-    const pensionCard = renderPensionCard(viewModel);
+    const pensionCard = renderPensionCard(viewModel, actions2);
     if (pensionCard) dashboard.append(pensionCard);
     dashboard.append(renderPostingCountCard(viewModel, actions2));
     const { card: postingCard } = createSimpleCard(
@@ -6756,28 +6797,43 @@
   }
 
   // src/ui/sections.js
+  var SIMPLE_SECTIONS = Object.freeze({
+    gamejob: ["gamejobSimple", renderGamejobSimpleMode],
+    jobkorea: ["jobkoreaSimple", renderJobkoreaSimpleMode]
+  });
+  var STANDARD_SECTIONS = Object.freeze([
+    {
+      key: "companyInfo",
+      visible: (viewModel) => viewModel.site?.id === "jobkorea",
+      render: renderRecruitmentCompanyInfo
+    },
+    {
+      key: "workforce",
+      visible: (viewModel) => viewModel.site?.id === "gamejob",
+      render: renderWorkforce
+    },
+    { key: "pastPostings", visible: () => true, render: renderPastPostings },
+    {
+      key: "pensionData",
+      visible: (viewModel) => viewModel.site?.id === "gamejob",
+      render: renderPensionData
+    },
+    {
+      key: "enhancedSearch",
+      visible: (viewModel) => Boolean(viewModel.gamejobListMode),
+      render: renderGamejobEnhancedSearch
+    }
+  ]);
   function createPanelSections(viewModel, actions2) {
-    if (viewModel.site?.id === "gamejob" && viewModel.settings.simpleMode) {
-      return /* @__PURE__ */ new Map([
-        ["gamejobSimple", renderGamejobSimpleMode(viewModel, actions2)]
-      ]);
+    const simpleSection = SIMPLE_SECTIONS[viewModel.site?.id];
+    if (viewModel.settings.simpleMode && simpleSection) {
+      const [key, render2] = simpleSection;
+      return /* @__PURE__ */ new Map([[key, render2(viewModel, actions2)]]);
     }
-    if (viewModel.site?.id === "jobkorea" && viewModel.settings.simpleMode) {
-      return /* @__PURE__ */ new Map([
-        ["jobkoreaSimple", renderJobkoreaSimpleMode(viewModel, actions2)]
-      ]);
-    }
-    const sections = new Map([
-      ...viewModel.site?.id === "jobkorea" ? [["companyInfo", renderRecruitmentCompanyInfo(viewModel, actions2)]] : [],
-      ...viewModel.site?.id === "gamejob" && viewModel.company ? [["postingDetails", renderGamejobGeneral(viewModel, actions2)]] : [],
-      ["pastPostings", renderPastPostings(viewModel, actions2)],
-      ["workforce", renderWorkforce(viewModel, actions2)],
-      ["pensionData", renderPensionData(viewModel, actions2)],
-      ...viewModel.gamejobListMode ? [["enhancedSearch", renderGamejobEnhancedSearch(viewModel, actions2)]] : []
-    ]);
-    for (const key of [...sections.keys()]) {
-      if (viewModel.settings.sectionVisibility?.[key] === false) {
-        sections.delete(key);
+    const sections = /* @__PURE__ */ new Map();
+    for (const section of STANDARD_SECTIONS) {
+      if (section.visible(viewModel) && viewModel.settings.sectionVisibility?.[section.key] !== false) {
+        sections.set(section.key, section.render(viewModel, actions2));
       }
     }
     return sections;
@@ -7647,7 +7703,7 @@
     const response = await sendRuntimeMessage({
       type: "hayoung:pension-search",
       criteria: createPensionSearchCriteria(state.pensionPoolUi.query),
-      limit: 5
+      limit: 4
     });
     if (!response?.ok) {
       throw new Error(response?.error ?? "\uC5F0\uAE08 \uD480 \uAC80\uC0C9\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
@@ -8136,6 +8192,7 @@
     }
   }
   async function startAutomaticPensionSearch() {
+    if (state.site?.id !== "gamejob") return;
     const companyName = String(state.company?.name ?? "").trim();
     if (!companyName) return;
     state.pensionPoolUi.query = companyName;
