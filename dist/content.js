@@ -1619,15 +1619,6 @@
     const focusMatch = normalizedFocusKeywords.some(
       (keyword) => normalizedTitle.includes(keyword)
     );
-    if (focusMode) {
-      const hiddenByFocus = normalizedFocusKeywords.length > 0 && !focusMatch;
-      return {
-        hidden: directHidden || hiddenByFocus,
-        saved,
-        focusMatch,
-        reason: directHidden ? "direct" : hiddenByFocus ? "focus" : null
-      };
-    }
     const phraseMatch = normalizePhraseList(hidePhrases).some(
       (phrase) => normalizedTitle.includes(phrase)
     );
@@ -1635,6 +1626,15 @@
       (phrase) => normalizedTitle.includes(phrase)
     );
     const hiddenByPhrase = phraseMatch && !exceptionMatch;
+    if (focusMode) {
+      const hiddenByFocus = normalizedFocusKeywords.length > 0 && !focusMatch;
+      return {
+        hidden: directHidden || hiddenByPhrase || hiddenByFocus,
+        saved,
+        focusMatch,
+        reason: directHidden ? "direct" : hiddenByPhrase ? "phrase" : hiddenByFocus ? "focus" : null
+      };
+    }
     return {
       hidden: directHidden || hiddenByPhrase,
       saved,
@@ -1654,12 +1654,10 @@
         hideExceptions: [],
         focusMode: false,
         focusKeywords: [],
-        focusPriority: false,
         focusIgnoreHiddenCompanies: false,
         companyInformation: /* @__PURE__ */ new Map(),
         loadingCompanyKeys: /* @__PURE__ */ new Set()
       };
-      this.originalOrders = /* @__PURE__ */ new Map();
       this.hiddenCount = 0;
       this.observer = null;
       this.scanQueued = false;
@@ -1674,7 +1672,6 @@
         hideExceptions: normalizePhraseList(rules.hideExceptions),
         focusMode: Boolean(rules.focusMode),
         focusKeywords: normalizePhraseList(rules.focusKeywords),
-        focusPriority: Boolean(rules.focusPriority),
         focusIgnoreHiddenCompanies: Boolean(
           rules.focusIgnoreHiddenCompanies
         ),
@@ -1697,7 +1694,6 @@
       this.active = false;
       this.observer?.disconnect();
       this.observer = null;
-      this.restoreOriginalOrder();
       for (const controls of this.document.querySelectorAll?.(
         `.${CONTROLS_CLASS}`
       ) ?? []) {
@@ -1777,8 +1773,6 @@
         this.renderSaveControl(row, link, posting, decision.saved);
         this.syncHideControls(row, link, posting, decision);
       }
-      const priorityEnabled = this.rules.focusMode && this.rules.focusPriority && this.rules.focusKeywords.length > 0;
-      this.applyStablePriority(records, priorityEnabled);
       this.reportHiddenCount(
         records.reduce(
           (count2, record) => count2 + Number(record.decision.hidden),
@@ -1997,56 +1991,6 @@
       });
       return button;
     }
-    applyStablePriority(records, enabled) {
-      if (!enabled) {
-        this.restoreOriginalOrder();
-        return;
-      }
-      const recordsByParent = /* @__PURE__ */ new Map();
-      for (const record of records) {
-        const parent = record.row.parentElement;
-        if (!parent?.children) continue;
-        if (!recordsByParent.has(parent)) recordsByParent.set(parent, []);
-        recordsByParent.get(parent).push(record);
-      }
-      for (const [parent, parentRecords] of recordsByParent) {
-        const currentChildren = [...parent.children];
-        const previousOriginal = this.originalOrders.get(parent) ?? [];
-        const original = [
-          ...previousOriginal.filter((child) => child.parentElement === parent),
-          ...currentChildren.filter((child) => !previousOriginal.includes(child))
-        ];
-        this.originalOrders.set(parent, original);
-        const recordByRow = new Map(
-          parentRecords.map((record) => [record.row, record])
-        );
-        const sortedPostingRows = original.filter((child) => recordByRow.has(child)).sort(
-          (left, right) => Number(recordByRow.get(right).decision.focusMatch) - Number(recordByRow.get(left).decision.focusMatch)
-        );
-        let postingIndex = 0;
-        const desired = original.map(
-          (child) => recordByRow.has(child) ? sortedPostingRows[postingIndex++] : child
-        );
-        this.reorderChildren(parent, desired);
-      }
-    }
-    restoreOriginalOrder() {
-      for (const [parent, children] of this.originalOrders) {
-        if (!parent?.isConnected && parent?.isConnected !== void 0) continue;
-        this.reorderChildren(
-          parent,
-          children.filter((child) => child.parentElement === parent)
-        );
-      }
-      this.originalOrders.clear();
-    }
-    reorderChildren(parent, desired) {
-      const current = [...parent.children];
-      if (current.length === desired.length && current.every((child, index) => child === desired[index])) {
-        return;
-      }
-      parent.append(...desired);
-    }
     reportHiddenCount(count2) {
       if (count2 === this.hiddenCount) return;
       this.hiddenCount = count2;
@@ -2082,10 +2026,10 @@
   // src/section-order.js
   var DEFAULT_SECTION_ORDER = Object.freeze([
     "companyInfo",
+    "enhancedSearch",
     "workforce",
     "pastPostings",
-    "pensionData",
-    "enhancedSearch"
+    "pensionData"
   ]);
   var PRIMARY_SECTION_ORDER = Object.freeze([
     "workforce",
@@ -2100,11 +2044,13 @@
     ];
     const primary = new Set(PRIMARY_SECTION_ORDER);
     const companyInfo = order.includes("companyInfo") ? ["companyInfo"] : [];
+    const enhancedSearch = order.includes("enhancedSearch") ? ["enhancedSearch"] : [];
     const remainder = order.filter(
-      (key) => key !== "companyInfo" && !primary.has(key)
+      (key) => key !== "companyInfo" && key !== "enhancedSearch" && !primary.has(key)
     );
     return [
       ...companyInfo,
+      ...enhancedSearch,
       ...PRIMARY_SECTION_ORDER,
       ...remainder
     ].filter((key, index, values) => values.indexOf(key) === index);
@@ -2670,7 +2616,7 @@
   }
 
   // src/storage-schema.js
-  var SCHEMA_VERSION = 21;
+  var SCHEMA_VERSION = 22;
   var V3_SECTION_ORDER = Object.freeze([
     "companyInfo",
     "workforce",
@@ -2719,7 +2665,6 @@
     gamejobHideExceptions: [],
     gamejobFocusMode: false,
     gamejobFocusKeywords: [],
-    gamejobFocusPriority: false,
     gamejobFocusIgnoreHiddenCompanies: false,
     enhancedSearchGroups: {
       companies: true,
@@ -2729,11 +2674,11 @@
       postings: true
     },
     enhancedSearchOrder: [
+      "focusKeywords",
+      "postings",
       "companies",
       "hidePhrases",
-      "hideExceptions",
-      "focusKeywords",
-      "postings"
+      "hideExceptions"
     ],
     sectionOrder: [...DEFAULT_SECTION_ORDER],
     sectionVisibility: {
@@ -3171,6 +3116,27 @@
       schemaVersion: 21
     };
   }
+  function migrateV21ToV22(value) {
+    const {
+      gamejobFocusPriority: _removedFocusPriority,
+      ...settings
+    } = value.settings ?? {};
+    return {
+      ...value,
+      settings: {
+        ...settings,
+        enhancedSearchOrder: [
+          "focusKeywords",
+          "postings",
+          "companies",
+          "hidePhrases",
+          "hideExceptions"
+        ],
+        sectionOrder: prioritizePrimarySections(settings.sectionOrder)
+      },
+      schemaVersion: 22
+    };
+  }
   var MIGRATIONS = /* @__PURE__ */ new Map([
     [0, migrateV0ToV1],
     [1, migrateV1ToV2],
@@ -3192,7 +3158,8 @@
     [17, migrateV17ToV18],
     [18, migrateV18ToV19],
     [19, migrateV19ToV20],
-    [20, migrateV20ToV21]
+    [20, migrateV20ToV21],
+    [21, migrateV21ToV22]
   ]);
   function migrateData(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -3213,6 +3180,7 @@
     const {
       pensionRemoteJsonUrl: _removedRemoteUrl,
       manualGamejobPostingSave: _removedManualPostingSave,
+      gamejobFocusPriority: _removedFocusPriority,
       ...currentSettings
     } = current.settings ?? {};
     return {
@@ -4879,18 +4847,6 @@
     label.append(copy, input);
     return label;
   }
-  function createPriorityToggle(settings, actions2) {
-    const label = make("label", "hy-enhanced-priority-row");
-    const input = make("input");
-    input.type = "checkbox";
-    input.checked = Boolean(settings.gamejobFocusPriority);
-    input.addEventListener(
-      "change",
-      () => actions2.onSettingsChange({ gamejobFocusPriority: input.checked })
-    );
-    label.append(input, make("span", "", "\uC77C\uCE58 \uACF5\uACE0 \uC6B0\uC120 \uC815\uB82C"));
-    return label;
-  }
   function createIgnoreHiddenCompaniesToggle(settings, actions2) {
     const label = make("label", "hy-enhanced-priority-row");
     const input = make("input");
@@ -5091,6 +5047,15 @@
       )
     });
   }
+  function getGamejobEnhancedSearchGroupKeys(settings) {
+    return [
+      "focusKeywords",
+      "postings",
+      "companies",
+      "hidePhrases",
+      "hideExceptions"
+    ];
+  }
   function createGamejobEnhancedSearchContent(viewModel, actions2) {
     const wrapper = make("div", "hy-enhanced-content");
     const settings = viewModel.settings;
@@ -5149,18 +5114,15 @@
       actions2
     );
     if (settings.gamejobFocusMode) {
-      focusContent.prepend(
-        createPriorityToggle(settings, actions2),
-        createIgnoreHiddenCompaniesToggle(settings, actions2)
-      );
+      focusContent.prepend(createIgnoreHiddenCompaniesToggle(settings, actions2));
     }
     groups.set(
       "focusKeywords",
       createEnhancedGroup({
         key: "focusKeywords",
-        title: "\uACF5\uACE0 \uAC80\uC0C9 \uC990\uACA8\uCC3E\uAE30",
+        title: "\uACF5\uACE0 \uC6B0\uC120\uAC80\uC0C9",
         count: keywords.length,
-        description: "\uCF1C\uC9C4 \uAC80\uC0C9\uC5B4 \uC911 \uD55C \uAC1C \uC774\uC0C1 \uC77C\uCE58\uD558\uB294 \uACF5\uACE0\uB9CC \uD45C\uC2DC\uD569\uB2C8\uB2E4. \uBAA8\uB450 \uAEBC\uC838 \uC788\uC73C\uBA74 \uBAA9\uB85D\uC744 \uADF8\uB300\uB85C \uB461\uB2C8\uB2E4.",
+        description: "\uC9D1\uC911 \uAC80\uC0C9\uC5D0\uC11C \uCF1C\uC9C4 \uAC80\uC0C9\uC5B4 \uC911 \uD55C \uAC1C \uC774\uC0C1 \uC77C\uCE58\uD558\uB294 \uACF5\uACE0\uB9CC \uD45C\uC2DC\uD569\uB2C8\uB2E4. \uBAA8\uB450 \uAEBC\uC838 \uC788\uC73C\uBA74 \uBAA9\uB85D\uC744 \uADF8\uB300\uB85C \uB461\uB2C8\uB2E4.",
         settings,
         actions: actions2,
         content: focusContent
@@ -5171,7 +5133,7 @@
     wrapper.append(createModeToggle(settings, actions2));
     const orderedKeys = [
       ...settings.enhancedSearchOrder ?? [],
-      ...groups.keys()
+      ...getGamejobEnhancedSearchGroupKeys(settings)
     ];
     for (const key of new Set(orderedKeys)) {
       const group = groups.get(key);
@@ -5830,11 +5792,18 @@
     return details;
   }
   function renderGamejobEnhancedSearch(viewModel, actions2) {
-    const { details, content } = createSection(
+    const { details, content, headerActions } = createSection(
       "\uAC80\uC0C9 \uAC15\uD654",
       "enhancedSearch",
       viewModel.settings,
       actions2
+    );
+    headerActions.append(
+      make(
+        "span",
+        "hy-enhanced-hidden-count",
+        `\uC228\uAE40 ${formatNumber(viewModel.hiddenPostingCount ?? 0)}\uAC74`
+      )
     );
     content.append(createGamejobEnhancedSearchContent(viewModel, actions2));
     return details;
@@ -6714,29 +6683,27 @@
     card.append(details);
     return card;
   }
-  function renderHiddenPostingCountCard(viewModel) {
+  function renderEnhancedSearchCard(viewModel, actions2) {
     if (!viewModel.gamejobListMode) return null;
-    const { card } = createSimpleCard(
-      "\uAC80\uC0C9 \uC228\uAE40",
-      "hy-gamejob-simple-hidden-count"
+    const { card, heading } = createSimpleCard(
+      "\uAC80\uC0C9 \uAC15\uD654",
+      "hy-gamejob-simple-enhanced-search"
     );
-    const total = make("div", "hy-gamejob-simple-total");
-    total.append(
-      make("span", "", "\uD604\uC7AC \uC228\uAE30\uAE30 \uC911\uC778 \uACF5\uACE0"),
+    heading.append(
       make(
-        "strong",
-        "",
-        `${formatNumber(viewModel.hiddenPostingCount ?? 0)}\uAC74`
+        "span",
+        "hy-gamejob-simple-hidden-badge",
+        `\uC228\uAE40 ${formatNumber(viewModel.hiddenPostingCount ?? 0)}\uAC74`
       )
     );
-    card.append(total);
+    card.append(createGamejobEnhancedSearchContent(viewModel, actions2));
     return card;
   }
   function renderGamejobSimpleMode(viewModel, actions2) {
     const dashboard = make("main", "hy-gamejob-simple-dashboard");
     dashboard.dataset.section = "gamejobSimple";
-    const hiddenPostingCountCard = renderHiddenPostingCountCard(viewModel);
-    if (hiddenPostingCountCard) dashboard.append(hiddenPostingCountCard);
+    const enhancedSearchCard = renderEnhancedSearchCard(viewModel, actions2);
+    if (enhancedSearchCard) dashboard.append(enhancedSearchCard);
     if (!viewModel.company) {
       const { card: postingCard2 } = createSimpleCard(
         "\uACF5\uACE0",
@@ -8120,7 +8087,6 @@
       hideExceptions: state.data.settings.gamejobHideExceptions,
       focusMode: state.data.settings.gamejobFocusMode,
       focusKeywords: state.data.settings.gamejobFocusKeywords,
-      focusPriority: state.data.settings.gamejobFocusPriority,
       focusIgnoreHiddenCompanies: state.data.settings.gamejobFocusIgnoreHiddenCompanies,
       companyInformation: getStoredGamejobListCompanyInformation(state.data),
       loadingCompanyKeys: state.loadingGamejobCompanyKeys

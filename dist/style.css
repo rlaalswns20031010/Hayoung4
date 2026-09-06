@@ -358,6 +358,22 @@
   margin: 0 0 15px;
 }
 
+#hy-root .hy-gamejob-simple-hidden-badge,
+#hy-root .hy-enhanced-hidden-count {
+  background: var(--hy-blue-soft);
+  border: 1px solid #cfdbfa;
+  border-radius: 999px;
+  color: #3554ad;
+  flex: 0 0 auto;
+  font-size: 0.7em;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+#hy-root .hy-gamejob-simple-enhanced-search .hy-enhanced-content {
+  gap: 10px;
+}
+
 #hy-root .hy-simple-automation-card {
   padding: 14px 17px;
 }

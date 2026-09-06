@@ -378,10 +378,10 @@ ${await historyResponse.text()}`,
   // src/section-order.js
   var DEFAULT_SECTION_ORDER = Object.freeze([
     "companyInfo",
+    "enhancedSearch",
     "workforce",
     "pastPostings",
-    "pensionData",
-    "enhancedSearch"
+    "pensionData"
   ]);
   var PRIMARY_SECTION_ORDER = Object.freeze([
     "workforce",
@@ -474,7 +474,6 @@ ${await historyResponse.text()}`,
     gamejobHideExceptions: [],
     gamejobFocusMode: false,
     gamejobFocusKeywords: [],
-    gamejobFocusPriority: false,
     gamejobFocusIgnoreHiddenCompanies: false,
     enhancedSearchGroups: {
       companies: true,
@@ -484,11 +483,11 @@ ${await historyResponse.text()}`,
       postings: true
     },
     enhancedSearchOrder: [
+      "focusKeywords",
+      "postings",
       "companies",
       "hidePhrases",
-      "hideExceptions",
-      "focusKeywords",
-      "postings"
+      "hideExceptions"
     ],
     sectionOrder: [...DEFAULT_SECTION_ORDER],
     sectionVisibility: {
