@@ -4,7 +4,7 @@
 - <sub>If you’re not sure how to use it, copy the link to this README and ask an AI.</sub>
 - <sub>使い方が分からない場合は、このREADMEのリンクをコピーしてAIに聞いてください。</sub>
 
-
+### 9월 업데이트는 9월28일에 진행됩니다(국민연금이 그때 업로드됨)
 # Hayoung4
 ### 누적 다운수 100을 넘었습니다 코드찌꺼기를 브라우저에 깔아주신 여러분들께 감사합니당
 
