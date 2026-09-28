@@ -2500,7 +2500,11 @@
 
   // src/pension-policy.js
   var PENSION_LATEST_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1e3;
-  var BUNDLED_PENSION_SEED_VERSION = "2026-08-game-directory-v5";
+  var BUNDLED_PENSION_SEED_VERSION = "2026-09-game-directory-v6";
+  var BUNDLED_PENSION_POLICY = Object.freeze({
+    requiredLatestMonth: "2026-09",
+    checkedAt: "2026-09-27T00:00:00+09:00"
+  });
   function normalizePensionMonth(value) {
     const match = cleanText(value).match(/^(20\d{2})\D?(0?[1-9]|1[0-2])$/);
     return match ? `${match[1]}-${match[2].padStart(2, "0")}` : null;
@@ -3483,10 +3487,21 @@
       return data;
     });
   }
-  async function recordBundledPensionSeedApplied(version = null) {
+  async function recordBundledPensionSeedApplied(version = null, bundledPolicyValue = null) {
     return updateData((data) => {
+      const currentPolicy = normalizePensionPolicy(data.pensionPolicy);
+      const bundledPolicy = normalizePensionPolicy(bundledPolicyValue);
+      const requiredLatestMonth = [
+        currentPolicy.requiredLatestMonth,
+        bundledPolicy.requiredLatestMonth
+      ].filter(Boolean).sort().at(-1);
+      const checkedAt = [currentPolicy.checkedAt, bundledPolicy.checkedAt].filter(Boolean).sort(
+        (left, right) => new Date(right).getTime() - new Date(left).getTime()
+      )[0];
       data.pensionPolicy = normalizePensionPolicy({
-        ...data.pensionPolicy,
+        ...currentPolicy,
+        requiredLatestMonth,
+        checkedAt,
         bundledSeedApplied: true,
         bundledSeedVersion: version
       });
@@ -7898,7 +7913,8 @@
     }
     state.pensionPoolSummary = response.summary ?? state.pensionPoolSummary;
     state.data = await recordBundledPensionSeedApplied(
-      BUNDLED_PENSION_SEED_VERSION
+      BUNDLED_PENSION_SEED_VERSION,
+      BUNDLED_PENSION_POLICY
     );
     await invalidatePensionSearchCache();
     await refreshPensionSearchResults();
@@ -9062,7 +9078,8 @@
           }
           state.pensionPoolSummary = seed.summary ?? state.pensionPoolSummary;
           state.data = await recordBundledPensionSeedApplied(
-            BUNDLED_PENSION_SEED_VERSION
+            BUNDLED_PENSION_SEED_VERSION,
+            BUNDLED_PENSION_POLICY
           );
           if (seed.imported) {
             state.notice = `\uB0B4\uC7A5 \uAD6D\uBBFC\uC5F0\uAE08 \uCD5C\uC2E0 \uC790\uB8CC ${formatNumber(seed.summary?.companyCount ?? 0)}\uAC1C \uD68C\uC0AC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4.`;

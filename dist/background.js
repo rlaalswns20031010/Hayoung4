@@ -345,6 +345,10 @@ ${await historyResponse.text()}`,
 
   // src/pension-policy.js
   var PENSION_LATEST_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1e3;
+  var BUNDLED_PENSION_POLICY = Object.freeze({
+    requiredLatestMonth: "2026-09",
+    checkedAt: "2026-09-27T00:00:00+09:00"
+  });
   function normalizePensionMonth(value) {
     const match = cleanText(value).match(/^(20\d{2})\D?(0?[1-9]|1[0-2])$/);
     return match ? `${match[1]}-${match[2].padStart(2, "0")}` : null;
