@@ -2500,10 +2500,11 @@
 
   // src/pension-policy.js
   var PENSION_LATEST_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1e3;
-  var BUNDLED_PENSION_SEED_VERSION = "2026-09-game-directory-v6";
+  var BUNDLED_PENSION_SEED_VERSION = "2026-10-game-directory-v7";
   var BUNDLED_PENSION_POLICY = Object.freeze({
-    requiredLatestMonth: "2026-09",
-    checkedAt: "2026-09-27T00:00:00+09:00"
+    requiredLatestMonth: "2026-10",
+    checkedAt: "2026-10-28T00:00:00+09:00",
+    nextCheckAt: "2026-11-25T00:00:00+09:00"
   });
   function normalizePensionMonth(value) {
     const match = cleanText(value).match(/^(20\d{2})\D?(0?[1-9]|1[0-2])$/);
@@ -2527,20 +2528,30 @@
     );
   }
   function normalizePensionPolicy(value) {
-    const checkedAt = cleanText(value?.checkedAt) || null;
+    const checkedAtValue = cleanText(value?.checkedAt);
+    const checkedAt = checkedAtValue && Number.isFinite(new Date(checkedAtValue).getTime()) ? checkedAtValue : null;
+    const nextCheckAt = cleanText(value?.nextCheckAt) || null;
     return {
       requiredLatestMonth: normalizePensionMonth(value?.requiredLatestMonth),
-      checkedAt: checkedAt && Number.isFinite(new Date(checkedAt).getTime()) ? checkedAt : null,
+      checkedAt,
+      nextCheckAt: checkedAt && new Date(nextCheckAt).getTime() > new Date(checkedAt).getTime() ? nextCheckAt : null,
       bundledSeedApplied: value?.bundledSeedApplied === true,
       bundledSeedVersion: cleanText(value?.bundledSeedVersion) || null
     };
+  }
+  function getPensionPolicyNextCheckAt(value) {
+    const policy = normalizePensionPolicy(value);
+    if (!policy.checkedAt) return null;
+    return policy.nextCheckAt ?? new Date(
+      new Date(policy.checkedAt).getTime() + PENSION_LATEST_CHECK_INTERVAL_MS
+    ).toISOString();
   }
   function isPensionPolicyCheckDue(value, nowValue = Date.now()) {
     const policy = normalizePensionPolicy(value);
     if (!policy.checkedAt || !policy.requiredLatestMonth) return true;
     const checkedAt = new Date(policy.checkedAt).getTime();
     const now = new Date(nowValue).getTime();
-    return !Number.isFinite(now) || now - checkedAt >= PENSION_LATEST_CHECK_INTERVAL_MS || now < checkedAt;
+    return !Number.isFinite(now) || now >= new Date(getPensionPolicyNextCheckAt(policy)).getTime() || now < checkedAt;
   }
   function isRequiredPensionMonthInstalled(summary, policyValue) {
     const required = normalizePensionPolicy(policyValue).requiredLatestMonth;
@@ -2714,6 +2725,7 @@
       pensionPolicy: {
         requiredLatestMonth: null,
         checkedAt: null,
+        nextCheckAt: null,
         bundledSeedApplied: false,
         bundledSeedVersion: null
       }
@@ -3482,7 +3494,8 @@
       data.pensionPolicy = normalizePensionPolicy({
         ...data.pensionPolicy,
         requiredLatestMonth: month,
-        checkedAt
+        checkedAt,
+        nextCheckAt: null
       });
       return data;
     });
@@ -3502,6 +3515,7 @@
         ...currentPolicy,
         requiredLatestMonth,
         checkedAt,
+        nextCheckAt: checkedAt === currentPolicy.checkedAt ? currentPolicy.nextCheckAt : bundledPolicy.nextCheckAt,
         bundledSeedApplied: true,
         bundledSeedVersion: version
       });
@@ -6528,6 +6542,18 @@
         `\uD68C\uC0AC ${formatNumber(pension?.companyCount)}\uAC1C \xB7 \uC8FC\uC18C ${formatNumber(pension?.locationCount)}\uAC1C \xB7 \uC6D4 \uC2A4\uB0C5\uC0F7 ${formatNumber(pension?.snapshotCount)}\uAC1C \xB7 ${monthRange}`
       )
     );
+    const nextCheckAt = getPensionPolicyNextCheckAt(viewModel.pensionPolicy);
+    if (nextCheckAt) {
+      content.append(
+        make(
+          "p",
+          "hy-option-description",
+          `\uB2E4\uC74C \uC5C5\uB370\uC774\uD2B8: ${new Date(nextCheckAt).toLocaleDateString("ko-KR", {
+            timeZone: "Asia/Seoul"
+          })}`
+        )
+      );
+    }
     const controls = make("div", "hy-data-controls");
     controls.append(
       makeButton(
@@ -7868,7 +7894,7 @@
     const policy = state.data?.pensionPolicy;
     if (isPensionPolicyCheckDue(policy)) {
       throw new Error(
-        "\uCD5C\uC2E0 \uD30C\uC77C \uD655\uC778 \uC2DC\uAC01\uC774 30\uC77C\uC744 \uC9C0\uB0AC\uC2B5\uB2C8\uB2E4. \uACF5\uACF5\uB370\uC774\uD130 \uC6D4\uBCC4 \uBAA9\uB85D\uC744 \uBA3C\uC800 \uAC31\uC2E0\uD558\uC138\uC694."
+        "\uC5F0\uAE08 \uC790\uB8CC\uC758 \uB2E4\uC74C \uC5C5\uB370\uC774\uD2B8 \uC77C\uC790\uAC00 \uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uACF5\uACF5\uB370\uC774\uD130 \uC6D4\uBCC4 \uBAA9\uB85D\uC744 \uBA3C\uC800 \uAC31\uC2E0\uD558\uC138\uC694."
       );
     }
     if (!policy?.requiredLatestMonth) {
